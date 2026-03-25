@@ -1432,7 +1432,7 @@
               },
               {
                 "group": "RPC and API",
-                "pages": ["reference/rpc", "reference/device-models"]
+                "pages": ["reference/rpc", "reference/device-models", "reference/gateway-integration"]
               },
               {
                 "group": "Templates",
