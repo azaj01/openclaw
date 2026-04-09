@@ -1,3 +1,4 @@
+
 # package-flutter.ps1 - Prepare Flutter runtime assets
 $ErrorActionPreference = "Stop"
 # Correctly resolve ROOT relative to scripts folder or CWD
@@ -17,9 +18,9 @@ $NODZIP  = "$BUILD\node-$ARCH.zip"
 Write-Host "=== OpenClaw Flutter Asset Packager ===" -ForegroundColor Cyan
 Write-Host "Output: $BUILD"
 
-if (Test-Path $BUILD) { 
+if (Test-Path $BUILD) {
     Write-Host "Cleaning $BUILD..."
-    Remove-Item -Recurse -Force $BUILD -ErrorAction SilentlyContinue
+    cmd /c rd /s /q $BUILD
 }
 if (-not (Test-Path $BUILD)) {
     New-Item -ItemType Directory -Force -Path $BUILD | Out-Null
@@ -83,7 +84,7 @@ $zipPath = "$BUILD\openclaw.zip"
 tar.exe -a -c -f $zipPath package
 
 Set-Location $ROOT
-Remove-Item -Recurse -Force $tempDir
+cmd /c rd /s /q $tempDir
 
 Write-Host "`n=== Done ===" -ForegroundColor Green
 $nodeSize = (Get-Item $NODZIP).Length / 1MB
@@ -91,3 +92,6 @@ $ocSize = (Get-Item $zipPath).Length / 1MB
 Write-Host "Node zip: $([math]::Round($nodeSize, 1)) MB -> $NODZIP"
 Write-Host "OpenClaw zip: $([math]::Round($ocSize, 1)) MB -> $zipPath"
 Write-Host "`nCopy these two files into your Flutter project's assets/runtime/ folder!" -ForegroundColor Yellow
+
+
+
