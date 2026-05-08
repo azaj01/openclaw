@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { installDownloadSpec } from "./skills-install-download.js";
 import { setTempStateDir } from "./skills-install.download-test-utils.js";
@@ -93,9 +94,13 @@ async function installDownloadSkill(params: {
 }
 
 function mockArchiveResponse(buffer: Uint8Array): void {
-  const blobPart = Uint8Array.from(buffer);
   fetchWithSsrFGuardMock.mockResolvedValue({
-    response: new Response(new Blob([blobPart]), { status: 200 }),
+    response: {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      body: Readable.from([Buffer.from(buffer)]),
+    },
     release: async () => undefined,
   });
 }
@@ -203,23 +208,24 @@ describe("installDownloadSpec extraction safety", () => {
     "fails closed when the lexical tools root is rebound before the final copy",
     async () => {
       const entry = buildEntry("base-rebind");
-      const safeRoot = resolveSkillToolsRootDir(entry);
+      const safeToolsRoot = resolveSkillToolsRootDir(entry);
       const outsideRoot = path.join(workspaceDir, "outside-root");
       await fs.mkdir(outsideRoot, { recursive: true });
 
       fetchWithSsrFGuardMock.mockResolvedValue({
-        response: new Response(
-          new ReadableStream({
-            async start(controller) {
-              controller.enqueue(new Uint8Array(Buffer.from("payload")));
-              const reboundRoot = `${safeRoot}-rebound`;
-              await fs.rename(safeRoot, reboundRoot);
-              await fs.symlink(outsideRoot, safeRoot);
-              controller.close();
-            },
-          }),
-          { status: 200 },
-        ),
+        response: {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          body: Readable.from(
+            (async function* () {
+              yield Buffer.from("payload");
+              const reboundRoot = `${safeToolsRoot}-rebound`;
+              await fs.rename(safeToolsRoot, reboundRoot);
+              await fs.symlink(outsideRoot, safeToolsRoot);
+            })(),
+          ),
+        },
         release: async () => undefined,
       });
 

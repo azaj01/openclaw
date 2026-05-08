@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_ACCOUNT_ID } from "../routing/session-key.js";
 import { channelsStatusCommand } from "./channels/status.js";
+import { createCapturingTestRuntime } from "./test-runtime-config-helpers.js";
 
 const resolveDefaultAccountId = () => DEFAULT_ACCOUNT_ID;
 
@@ -10,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   readConfigFileSnapshot: vi.fn(async () => ({ path: "/tmp/openclaw.json" })),
   requireValidConfigSnapshot: vi.fn(),
   listChannelPlugins: vi.fn(),
+  listConfiguredChannelIdsForReadOnlyScope: vi.fn((_params: unknown) => ["discord"]),
+  missingOfficialExternalChannels: new Set<string>(),
   withProgress: vi.fn(async (_opts: unknown, run: () => Promise<unknown>) => await run()),
 }));
 
@@ -31,6 +34,29 @@ vi.mock("../cli/command-config-resolution.js", () => ({
 
 vi.mock("../config/config.js", () => ({
   readConfigFileSnapshot: () => mocks.readConfigFileSnapshot(),
+}));
+
+vi.mock("../plugins/channel-plugin-ids.js", () => ({
+  listExplicitConfiguredChannelIdsForConfig: (config: { channels?: Record<string, unknown> }) =>
+    Object.keys(config.channels ?? {}),
+  listConfiguredChannelIdsForReadOnlyScope: (params: unknown) =>
+    mocks.listConfiguredChannelIdsForReadOnlyScope(params),
+}));
+
+vi.mock("../plugins/official-external-plugin-repair-hints.js", () => ({
+  resolveMissingOfficialExternalChannelPluginRepairHint: ({ channelId }: { channelId: string }) =>
+    mocks.missingOfficialExternalChannels.has(channelId)
+      ? {
+          pluginId: channelId,
+          channelId,
+          label: "Feishu",
+          installSpec: "@openclaw/feishu",
+          installCommand: "openclaw plugins install @openclaw/feishu",
+          doctorFixCommand: "openclaw doctor --fix",
+          repairHint:
+            "Install the official external plugin with: openclaw plugins install @openclaw/feishu, or run: openclaw doctor --fix.",
+        }
+      : null,
 }));
 
 vi.mock("./channels/shared.js", () => ({
@@ -82,6 +108,10 @@ vi.mock("../channels/plugins/index.js", () => ({
     (mocks.listChannelPlugins() as Array<{ id: string }>).find((plugin) => plugin.id === channel),
 }));
 
+vi.mock("../channels/plugins/read-only.js", () => ({
+  listReadOnlyChannelPluginsForConfig: () => mocks.listChannelPlugins(),
+}));
+
 vi.mock("../channels/account-snapshot-fields.js", () => ({
   hasConfiguredUnavailableCredentialStatus: (account: Record<string, unknown>) =>
     Object.values(account).includes("configured_unavailable"),
@@ -119,7 +149,7 @@ vi.mock("../channels/plugins/status.js", () => ({
 }));
 
 vi.mock("../cli/command-secret-targets.js", () => ({
-  getChannelsCommandSecretTargetIds: () => [],
+  getConfiguredChannelsCommandSecretTargetIds: () => [],
 }));
 
 vi.mock("../infra/channels-status-issues.js", () => ({
@@ -166,17 +196,6 @@ function createTokenOnlyPlugin() {
   };
 }
 
-function createRuntimeCapture() {
-  const logs: string[] = [];
-  const errors: string[] = [];
-  const runtime = {
-    log: (message: unknown) => logs.push(String(message)),
-    error: (message: unknown) => errors.push(String(message)),
-    exit: (_code?: number) => undefined,
-  };
-  return { runtime, logs, errors };
-}
-
 describe("channelsStatusCommand SecretRef fallback flow", () => {
   beforeEach(() => {
     mocks.callGateway.mockReset();
@@ -184,6 +203,9 @@ describe("channelsStatusCommand SecretRef fallback flow", () => {
     mocks.readConfigFileSnapshot.mockClear();
     mocks.requireValidConfigSnapshot.mockReset();
     mocks.listChannelPlugins.mockReset();
+    mocks.missingOfficialExternalChannels.clear();
+    mocks.listConfiguredChannelIdsForReadOnlyScope.mockClear();
+    mocks.listConfiguredChannelIdsForReadOnlyScope.mockReturnValue(["discord"]);
     mocks.withProgress.mockClear();
     mocks.listChannelPlugins.mockReturnValue([createTokenOnlyPlugin()]);
   });
@@ -198,7 +220,7 @@ describe("channelsStatusCommand SecretRef fallback flow", () => {
         "channels status: channels.discord.token is unavailable in this command path; continuing with degraded read-only config.",
       ],
     });
-    const { runtime, logs, errors } = createRuntimeCapture();
+    const { runtime, logs, errors } = createCapturingTestRuntime();
 
     await channelsStatusCommand({ probe: false }, runtime as never);
 
@@ -227,7 +249,7 @@ describe("channelsStatusCommand SecretRef fallback flow", () => {
       effectiveConfig: { secretResolved: true, channels: {} },
       diagnostics: [],
     });
-    const { runtime, logs } = createRuntimeCapture();
+    const { runtime, logs } = createCapturingTestRuntime();
 
     await channelsStatusCommand({ probe: false }, runtime as never);
 
@@ -236,5 +258,75 @@ describe("channelsStatusCommand SecretRef fallback flow", () => {
     expect(joined).toContain("token:config");
     expect(joined).not.toContain("secret unavailable in this command path");
     expect(joined).not.toContain("token:config (unavailable)");
+  });
+
+  it("shows missing official external plugin repair hints in config-only output", async () => {
+    mocks.callGateway.mockRejectedValue(new Error("gateway closed"));
+    mocks.requireValidConfigSnapshot.mockResolvedValue({
+      channels: { feishu: { appId: "cli_xxx" } },
+    });
+    mocks.resolveCommandConfigWithSecrets.mockResolvedValue({
+      resolvedConfig: { channels: { feishu: { appId: "cli_xxx" } } },
+      effectiveConfig: { channels: { feishu: { appId: "cli_xxx" } } },
+      diagnostics: [],
+    });
+    mocks.missingOfficialExternalChannels.add("feishu");
+    mocks.listChannelPlugins.mockReturnValue([]);
+    const { runtime, logs } = createCapturingTestRuntime();
+
+    await channelsStatusCommand({ probe: false }, runtime as never);
+
+    const joined = logs.join("\n");
+    expect(joined).toContain("Missing official external plugins:");
+    expect(joined).toContain(
+      "Feishu: Install the official external plugin with: openclaw plugins install @openclaw/feishu, or run: openclaw doctor --fix.",
+    );
+  });
+
+  it("keeps JSON fallback structured without rendering config-only text", async () => {
+    mocks.callGateway.mockRejectedValue(
+      new Error(
+        [
+          "gateway timeout after 3000ms",
+          "Gateway target: wss://user:pass@gateway.example.com/socket?token=secret-token&keep=visible",
+          "Gateway fallback: (wss://fallback-user:fallback-pass@[bad-host/socket?token=fallback-secret&keep=visible)",
+          "Source: env OPENCLAW_GATEWAY_URL",
+        ].join("\n"),
+      ),
+    );
+    mocks.requireValidConfigSnapshot.mockResolvedValue({ secretResolved: false, channels: {} });
+    mocks.resolveCommandConfigWithSecrets.mockResolvedValue({
+      resolvedConfig: { secretResolved: true, channels: {} },
+      effectiveConfig: { secretResolved: true, channels: {} },
+      diagnostics: [],
+    });
+    const { runtime, logs, errors } = createCapturingTestRuntime();
+
+    await channelsStatusCommand({ json: true, probe: false }, runtime as never);
+
+    expect(mocks.listChannelPlugins).not.toHaveBeenCalled();
+    expect(mocks.listConfiguredChannelIdsForReadOnlyScope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: expect.objectContaining({ secretResolved: true }),
+        includePersistedAuthState: false,
+      }),
+    );
+    const payload = JSON.parse(logs.at(-1) ?? "{}");
+    expect(errors.join("\n")).not.toContain("user:pass");
+    expect(errors.join("\n")).not.toContain("secret-token");
+    expect(errors.join("\n")).not.toContain("fallback-user:fallback-pass");
+    expect(errors.join("\n")).not.toContain("fallback-secret");
+    expect(payload.error).toContain("Gateway target:");
+    expect(payload.error).not.toContain("user:pass");
+    expect(payload.error).not.toContain("secret-token");
+    expect(payload.error).not.toContain("fallback-user:fallback-pass");
+    expect(payload.error).not.toContain("fallback-secret");
+    expect(payload).toEqual(
+      expect.objectContaining({
+        gatewayReachable: false,
+        configOnly: true,
+        configuredChannels: ["discord"],
+      }),
+    );
   });
 });
