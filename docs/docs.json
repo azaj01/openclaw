@@ -1719,20 +1719,12 @@
               },
               {
                 "group": "RPC and API",
-<<<<<<< HEAD
-                "pages": [
-                  "reference/rpc",
-                  "reference/device-models",
-                  "reference/gateway-integration"
-                ]
-=======
                 "pages": [
                   "reference/rpc",
                   "concepts/openclaw-sdk",
                   "reference/openclaw-sdk-api-design",
                   "reference/device-models"
                 ]
->>>>>>> main
               },
               {
                 "group": "Templates",
