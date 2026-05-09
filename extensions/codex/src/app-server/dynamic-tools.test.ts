@@ -456,7 +456,7 @@ describe("createCodexDynamicToolBridge", () => {
     });
 
     expect(result).toEqual(expectInputText("Generated media reply."));
-    expect(bridge.telemetry.toolMediaUrls).toEqual([]);
+    expect(bridge.telemetry.toolMediaUrls).toStrictEqual([]);
   });
 
   it("still applies legacy codex app-server extension factories after middleware", async () => {
@@ -911,10 +911,17 @@ describe("createCodexDynamicToolBridge", () => {
       },
       { signal: callController.signal },
     );
-    await vi.waitFor(() => expect(capturedSignal).toBeDefined());
+    await vi.waitFor(() => {
+      if (!capturedSignal) {
+        throw new Error("expected dynamic tool call signal");
+      }
+    });
+    if (!capturedSignal) {
+      throw new Error("expected dynamic tool call signal");
+    }
 
     callController.abort(new Error("deadline"));
-    expect(capturedSignal?.aborted).toBe(true);
+    expect(capturedSignal.aborted).toBe(true);
     resolveTool?.(textToolResult("done"));
 
     await expect(result).resolves.toEqual(expectInputText("done"));

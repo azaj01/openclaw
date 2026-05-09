@@ -1,6 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const enqueueSystemEventMock = vi.hoisted(() => vi.fn());
+const requestHeartbeatMock = vi.hoisted(() => vi.fn());
 type DispatchPluginInteractiveHandlerResult = {
   matched: boolean;
   handled: boolean;
@@ -26,6 +27,14 @@ vi.mock("openclaw/plugin-sdk/system-event-runtime", async (importOriginal) => {
   return {
     ...actual,
     enqueueSystemEvent: (...args: unknown[]) => enqueueSystemEventMock(...args),
+  };
+});
+
+vi.mock("openclaw/plugin-sdk/heartbeat-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/heartbeat-runtime")>();
+  return {
+    ...actual,
+    requestHeartbeat: (...args: unknown[]) => requestHeartbeatMock(...args),
   };
 });
 
@@ -274,10 +283,30 @@ function createContext(overrides?: {
     isChannelAllowed,
     resolveUserName,
     resolveChannelName,
-    getActionMatcher: () => actionMatcher,
-    getHandler: () => handler,
-    getViewHandler: () => viewHandler,
-    getViewClosedHandler: () => viewClosedHandler,
+    getActionMatcher: () => {
+      if (!actionMatcher) {
+        throw new Error("Expected Slack action matcher to be registered");
+      }
+      return actionMatcher;
+    },
+    getHandler: () => {
+      if (!handler) {
+        throw new Error("Expected Slack action handler to be registered");
+      }
+      return handler;
+    },
+    getViewHandler: () => {
+      if (!viewHandler) {
+        throw new Error("Expected Slack view handler to be registered");
+      }
+      return viewHandler;
+    },
+    getViewClosedHandler: () => {
+      if (!viewClosedHandler) {
+        throw new Error("Expected Slack view-closed handler to be registered");
+      }
+      return viewClosedHandler;
+    },
   };
 }
 
@@ -287,7 +316,9 @@ describe("registerSlackInteractionEvents", () => {
   });
 
   beforeEach(() => {
-    enqueueSystemEventMock.mockClear();
+    enqueueSystemEventMock.mockReset();
+    enqueueSystemEventMock.mockReturnValue(true);
+    requestHeartbeatMock.mockClear();
     dispatchPluginInteractiveHandlerMock.mockClear();
     resolvePluginConversationBindingApprovalMock.mockClear();
     resolvePluginConversationBindingApprovalMock.mockResolvedValue({ status: "expired" });
@@ -308,11 +339,10 @@ describe("registerSlackInteractionEvents", () => {
     registerSlackInteractionEvents({ ctx: ctx as never, trackEvent });
 
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
     const respond = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       respond,
       body: {
@@ -375,6 +405,7 @@ describe("registerSlackInteractionEvents", () => {
       channelId: "C1",
       channelType: "channel",
       senderId: "U123",
+      threadTs: "100.100",
     });
     expect(trackEvent).toHaveBeenCalledTimes(1);
     expect(app.client.chat.update).toHaveBeenCalledTimes(1);
@@ -385,9 +416,8 @@ describe("registerSlackInteractionEvents", () => {
     registerSlackInteractionEvents({ ctx: ctx as never });
 
     const matcher = getActionMatcher();
-    expect(matcher).toBeTruthy();
-    expect(matcher?.test("openclaw:verify")).toBe(true);
-    expect(matcher?.test("codex")).toBe(true);
+    expect(matcher.test("openclaw:verify")).toBe(true);
+    expect(matcher.test("codex")).toBe(true);
   });
 
   it("routes matching Slack actions through the shared plugin interactive dispatcher", async () => {
@@ -400,11 +430,10 @@ describe("registerSlackInteractionEvents", () => {
     registerSlackInteractionEvents({ ctx: ctx as never });
 
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
     const respond = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       respond,
       body: {
@@ -500,10 +529,9 @@ describe("registerSlackInteractionEvents", () => {
     registerSlackInteractionEvents({ ctx: ctx as never });
 
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       body: {
         user: { id: "U_ALLOWED" },
@@ -572,10 +600,9 @@ describe("registerSlackInteractionEvents", () => {
     registerSlackInteractionEvents({ ctx: ctx as never });
 
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       body: {
         user: { id: "U_OWNER" },
@@ -627,14 +654,13 @@ describe("registerSlackInteractionEvents", () => {
   });
 
   it("treats Slack reply buttons as plain interaction events instead of plugin dispatch", async () => {
-    const { ctx, app, getHandler } = createContext();
+    const { ctx, app, getHandler, resolveSessionKey } = createContext();
     registerSlackInteractionEvents({ ctx: ctx as never });
 
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       body: {
         user: { id: "U123" },
@@ -665,8 +691,31 @@ describe("registerSlackInteractionEvents", () => {
     expect(dispatchPluginInteractiveHandlerMock).not.toHaveBeenCalled();
     expect(enqueueSystemEventMock).toHaveBeenCalledWith(
       expect.stringContaining('"actionId":"openclaw:reply_button"'),
-      expect.any(Object),
+      expect.objectContaining({
+        contextKey: "slack:interaction:C1:100.200:openclaw:reply_button",
+        deliveryContext: {
+          accountId: "default",
+          channel: "slack",
+          threadId: "100.100",
+          to: "channel:C1",
+        },
+        sessionKey: "agent:ops:slack:channel:C1",
+        trusted: false,
+      }),
     );
+    expect(resolveSessionKey).toHaveBeenCalledWith({
+      channelId: "C1",
+      channelType: "channel",
+      senderId: "U123",
+      threadTs: "100.100",
+    });
+    expect(requestHeartbeatMock).toHaveBeenCalledWith({
+      source: "hook",
+      intent: "immediate",
+      reason: "hook:slack-interaction",
+      sessionKey: "agent:ops:slack:channel:C1",
+      heartbeat: { target: "last" },
+    });
     expect(app.client.chat.update).toHaveBeenCalledTimes(1);
   });
 
@@ -680,10 +729,9 @@ describe("registerSlackInteractionEvents", () => {
     registerSlackInteractionEvents({ ctx: ctx as never });
 
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       body: {
         user: { id: "U123" },
@@ -710,7 +758,7 @@ describe("registerSlackInteractionEvents", () => {
         text: { type: "plain_text", text: "Approve" },
       },
     });
-    await handler!({
+    await handler({
       ack,
       body: {
         user: { id: "U123" },
@@ -769,11 +817,10 @@ describe("registerSlackInteractionEvents", () => {
     registerSlackInteractionEvents({ ctx: ctx as never });
 
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
     const respond = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       respond,
       body: {
@@ -828,11 +875,10 @@ describe("registerSlackInteractionEvents", () => {
     registerSlackInteractionEvents({ ctx: ctx as never });
 
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
     const respond = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       respond,
       body: {
@@ -889,11 +935,10 @@ describe("registerSlackInteractionEvents", () => {
     registerSlackInteractionEvents({ ctx: ctx as never });
 
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
     await expect(
-      handler!({
+      handler({
         ack,
         body: {
           user: { id: "U123" },
@@ -944,11 +989,10 @@ describe("registerSlackInteractionEvents", () => {
     registerSlackInteractionEvents({ ctx: ctx as never });
 
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
     const respond = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       respond,
       body: {
@@ -993,11 +1037,10 @@ describe("registerSlackInteractionEvents", () => {
     registerSlackInteractionEvents({ ctx: ctx as never });
 
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
     const respond = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       respond,
       body: {
@@ -1032,11 +1075,9 @@ describe("registerSlackInteractionEvents", () => {
 
     const viewHandler = getViewHandler();
     const viewClosedHandler = getViewClosedHandler();
-    expect(viewHandler).toBeTruthy();
-    expect(viewClosedHandler).toBeTruthy();
 
     const ackSubmit = vi.fn().mockResolvedValue(undefined);
-    await viewHandler!({
+    await viewHandler({
       ack: ackSubmit,
       body: {
         user: { id: "U123" },
@@ -1051,7 +1092,7 @@ describe("registerSlackInteractionEvents", () => {
     expect(ackSubmit).toHaveBeenCalledTimes(1);
 
     const ackClosed = vi.fn().mockResolvedValue(undefined);
-    await viewClosedHandler!({
+    await viewClosedHandler({
       ack: ackClosed,
       body: {
         user: { id: "U123" },
@@ -1072,10 +1113,9 @@ describe("registerSlackInteractionEvents", () => {
     const { ctx, app, getHandler } = createContext();
     registerSlackInteractionEvents({ ctx: ctx as never });
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       body: {
         user: { id: "U555" },
@@ -1131,11 +1171,10 @@ describe("registerSlackInteractionEvents", () => {
     });
     registerSlackInteractionEvents({ ctx: ctx as never });
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
     const respond = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       respond,
       body: {
@@ -1169,11 +1208,10 @@ describe("registerSlackInteractionEvents", () => {
     });
     registerSlackInteractionEvents({ ctx: ctx as never });
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
     const respond = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       respond,
       body: {
@@ -1210,11 +1248,10 @@ describe("registerSlackInteractionEvents", () => {
     });
     registerSlackInteractionEvents({ ctx: ctx as never });
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
     const respond = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       respond,
       body: {
@@ -1248,11 +1285,10 @@ describe("registerSlackInteractionEvents", () => {
     });
     registerSlackInteractionEvents({ ctx: ctx as never });
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
     const respond = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       respond,
       body: {
@@ -1284,11 +1320,10 @@ describe("registerSlackInteractionEvents", () => {
     const { ctx, app, getHandler } = createContext({ allowFrom: [] });
     registerSlackInteractionEvents({ ctx: ctx as never });
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
     const respond = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       respond,
       body: {
@@ -1320,11 +1355,10 @@ describe("registerSlackInteractionEvents", () => {
     });
     registerSlackInteractionEvents({ ctx: ctx as never });
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
     const respond = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       respond,
       body: {
@@ -1356,10 +1390,9 @@ describe("registerSlackInteractionEvents", () => {
     const { ctx, app, getHandler, runtimeLog } = createContext();
     registerSlackInteractionEvents({ ctx: ctx as never });
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       body: {
         user: { id: "U666" },
@@ -1390,10 +1423,9 @@ describe("registerSlackInteractionEvents", () => {
     const { ctx, app, getHandler } = createContext();
     registerSlackInteractionEvents({ ctx: ctx as never });
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       body: {
         user: { id: "U556" },
@@ -1439,10 +1471,9 @@ describe("registerSlackInteractionEvents", () => {
     const { ctx, app, getHandler, resolveSessionKey } = createContext();
     registerSlackInteractionEvents({ ctx: ctx as never });
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       body: {
         user: { id: "U111" },
@@ -1463,6 +1494,7 @@ describe("registerSlackInteractionEvents", () => {
       channelId: "C222",
       channelType: "channel",
       senderId: "U111",
+      threadTs: "222.111",
     });
     expect(enqueueSystemEventMock).toHaveBeenCalledTimes(1);
     const [eventText] = enqueueSystemEventMock.mock.calls[0] as [string];
@@ -1486,10 +1518,9 @@ describe("registerSlackInteractionEvents", () => {
     const { ctx, app, getHandler } = createContext();
     registerSlackInteractionEvents({ ctx: ctx as never });
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       body: {
         user: { id: "U222" },
@@ -1545,10 +1576,9 @@ describe("registerSlackInteractionEvents", () => {
     const { ctx, app, getHandler } = createContext();
     registerSlackInteractionEvents({ ctx: ctx as never });
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       body: {
         user: { id: "U333" },
@@ -1583,7 +1613,7 @@ describe("registerSlackInteractionEvents", () => {
       },
     });
 
-    await handler!({
+    await handler({
       ack,
       body: {
         user: { id: "U333" },
@@ -1608,7 +1638,7 @@ describe("registerSlackInteractionEvents", () => {
       },
     });
 
-    await handler!({
+    await handler({
       ack,
       body: {
         user: { id: "U333" },
@@ -1690,10 +1720,9 @@ describe("registerSlackInteractionEvents", () => {
     const { ctx, getHandler } = createContext();
     registerSlackInteractionEvents({ ctx: ctx as never });
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       body: {
         user: { id: "U321" },
@@ -1759,10 +1788,9 @@ describe("registerSlackInteractionEvents", () => {
     const { ctx, getHandler } = createContext();
     registerSlackInteractionEvents({ ctx: ctx as never });
     const handler = getHandler();
-    expect(handler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await handler!({
+    await handler({
       ack,
       body: {
         user: { id: "U420" },
@@ -1807,10 +1835,9 @@ describe("registerSlackInteractionEvents", () => {
     const trackEvent = vi.fn();
     registerSlackInteractionEvents({ ctx: ctx as never, trackEvent });
     const viewHandler = getViewHandler();
-    expect(viewHandler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await viewHandler!({
+    await viewHandler({
       ack,
       body: {
         user: { id: "U777" },
@@ -1907,10 +1934,9 @@ describe("registerSlackInteractionEvents", () => {
     const { ctx, getViewHandler } = createContext();
     registerSlackInteractionEvents({ ctx: ctx as never });
     const viewHandler = getViewHandler();
-    expect(viewHandler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await viewHandler!({
+    await viewHandler({
       ack,
       body: {
         user: { id: "U222" },
@@ -1934,10 +1960,9 @@ describe("registerSlackInteractionEvents", () => {
     const { ctx, getViewHandler } = createContext();
     registerSlackInteractionEvents({ ctx: ctx as never });
     const viewHandler = getViewHandler();
-    expect(viewHandler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await viewHandler!({
+    await viewHandler({
       ack,
       body: {
         user: { id: "U222" },
@@ -1960,10 +1985,9 @@ describe("registerSlackInteractionEvents", () => {
     const { ctx, getViewHandler } = createContext({ allowFrom: [] });
     registerSlackInteractionEvents({ ctx: ctx as never });
     const viewHandler = getViewHandler();
-    expect(viewHandler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await viewHandler!({
+    await viewHandler({
       ack,
       body: {
         user: { id: "U444" },
@@ -1987,10 +2011,9 @@ describe("registerSlackInteractionEvents", () => {
     const { ctx, getViewHandler } = createContext();
     registerSlackInteractionEvents({ ctx: ctx as never });
     const viewHandler = getViewHandler();
-    expect(viewHandler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await viewHandler!({
+    await viewHandler({
       ack,
       body: {
         user: { id: "U444" },
@@ -2202,11 +2225,10 @@ describe("registerSlackInteractionEvents", () => {
     const { ctx, getViewHandler } = createContext();
     registerSlackInteractionEvents({ ctx: ctx as never });
     const viewHandler = getViewHandler();
-    expect(viewHandler).toBeTruthy();
 
     const longText = "deploy ".repeat(40).trim();
     const ack = vi.fn().mockResolvedValue(undefined);
-    await viewHandler!({
+    await viewHandler({
       ack,
       body: {
         user: { id: "U555" },
@@ -2242,8 +2264,10 @@ describe("registerSlackInteractionEvents", () => {
       inputs: Array<{ actionId: string; richTextPreview?: string }>;
     };
     const richInput = payload.inputs.find((input) => input.actionId === "richtext_input");
-    expect(richInput?.richTextPreview).toBeTruthy();
-    expect((richInput?.richTextPreview ?? "").length).toBeLessThanOrEqual(120);
+    if (!richInput?.richTextPreview) {
+      throw new Error("Expected rich text input preview");
+    }
+    expect(richInput.richTextPreview.length).toBeLessThanOrEqual(120);
   });
 
   it("captures modal close events and enqueues view closed event", async () => {
@@ -2252,10 +2276,9 @@ describe("registerSlackInteractionEvents", () => {
     const trackEvent = vi.fn();
     registerSlackInteractionEvents({ ctx: ctx as never, trackEvent });
     const viewClosedHandler = getViewClosedHandler();
-    expect(viewClosedHandler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await viewClosedHandler!({
+    await viewClosedHandler({
       ack,
       body: {
         user: { id: "U900" },
@@ -2339,10 +2362,9 @@ describe("registerSlackInteractionEvents", () => {
     const { ctx, getViewClosedHandler } = createContext();
     registerSlackInteractionEvents({ ctx: ctx as never });
     const viewClosedHandler = getViewClosedHandler();
-    expect(viewClosedHandler).toBeTruthy();
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await viewClosedHandler!({
+    await viewClosedHandler({
       ack,
       body: {
         user: { id: "U901" },
@@ -2370,7 +2392,6 @@ describe("registerSlackInteractionEvents", () => {
     const { ctx, getViewHandler } = createContext();
     registerSlackInteractionEvents({ ctx: ctx as never });
     const viewHandler = getViewHandler();
-    expect(viewHandler).toBeTruthy();
 
     const richTextValue = {
       type: "rich_text",
@@ -2390,7 +2411,7 @@ describe("registerSlackInteractionEvents", () => {
     }
 
     const ack = vi.fn().mockResolvedValue(undefined);
-    await viewHandler!({
+    await viewHandler({
       ack,
       body: {
         user: { id: "U915" },
