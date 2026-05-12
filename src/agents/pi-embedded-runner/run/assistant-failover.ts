@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { sanitizeForLog } from "../../../terminal/ansi.js";
 import type { AuthProfileFailureReason } from "../../auth-profiles.js";
@@ -153,7 +153,7 @@ export async function handleAssistantFailover(params: {
     }
 
     const rotated = await params.advanceAuthProfile();
-    void markFailedProfile();
+    const markFailedProfilePromise = markFailedProfile();
     if (params.timedOut && !params.isProbeSession && failedProfileId) {
       params.warn(`Profile ${failedProfileId} timed out. Trying next account...`);
     }
@@ -163,6 +163,7 @@ export async function handleAssistantFailover(params: {
       );
     }
     if (rotated) {
+      void markFailedProfilePromise;
       params.logAssistantFailoverDecision("rotate_profile");
       await params.maybeBackoffBeforeOverloadFailover(params.failoverReason);
       return {
@@ -175,6 +176,7 @@ export async function handleAssistantFailover(params: {
         }),
       };
     }
+    await markFailedProfilePromise;
     if (params.idleTimedOut && params.allowSameModelIdleTimeoutRetry) {
       return sameModelIdleTimeoutRetry();
     }

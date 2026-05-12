@@ -2,6 +2,7 @@
 
 import { render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { i18n, t } from "../../i18n/index.ts";
 import type { AppViewState } from "../app-view-state.ts";
 import {
   createModelCatalog,
@@ -344,6 +345,14 @@ function getChatModelSelect(container: Element): HTMLSelectElement {
   return select;
 }
 
+function requireElement(container: Element, selector: string, label: string): Element {
+  const element = container.querySelector(selector);
+  if (element === null) {
+    throw new Error(`expected ${label}`);
+  }
+  return element;
+}
+
 function renderChatView(overrides: Partial<Parameters<typeof renderChat>[0]> = {}) {
   const container = document.createElement("div");
   render(
@@ -503,11 +512,99 @@ describe("chat loading skeleton", () => {
 });
 
 describe("chat voice controls", () => {
+  afterEach(async () => {
+    await i18n.setLocale("en");
+  });
+
   it("keeps Talk visible without the stale browser dictation button", () => {
     const container = renderChatView();
 
-    expect(container.querySelectorAll('[aria-label="Start Talk"]')).toHaveLength(1);
+    requireElement(container, '[aria-label="Start Talk"]', "Start Talk button");
+    requireElement(container, '[aria-label="Talk options"]', "Talk options button");
     expect(container.querySelector('[aria-label="Voice input"]')).toBeNull();
+  });
+
+  it("renders editable Talk launch options", () => {
+    const onRealtimeTalkOptionsChange = vi.fn();
+    const container = renderChatView({
+      realtimeTalkOptionsOpen: true,
+      realtimeTalkOptions: {
+        provider: "openai",
+        model: "gpt-realtime-2",
+        voice: "marin",
+        transport: "webrtc",
+        vadThreshold: "0.45",
+        silenceDurationMs: "650",
+        prefixPaddingMs: "250",
+        reasoningEffort: "low",
+      },
+      onRealtimeTalkOptionsChange,
+    });
+
+    const model = container.querySelector<HTMLInputElement>(
+      '.agent-chat__talk-options input[placeholder="gpt-realtime-2"]',
+    );
+    const voice = container.querySelector<HTMLSelectElement>(
+      ".agent-chat__talk-options label:nth-of-type(4) select",
+    );
+    const voiceOptions = Array.from(
+      container.querySelectorAll<HTMLOptionElement>(
+        ".agent-chat__talk-options label:nth-of-type(4) option",
+      ),
+    ).map((option) => option.value);
+    const reasoningOptions = Array.from(
+      container.querySelectorAll<HTMLOptionElement>(
+        ".agent-chat__talk-options label:nth-of-type(5) option",
+      ),
+    ).map((option) => option.value);
+
+    if (voice === null) {
+      throw new Error("expected Talk voice select");
+    }
+    expect(voiceOptions).toEqual([
+      "",
+      "alloy",
+      "ash",
+      "ballad",
+      "coral",
+      "echo",
+      "sage",
+      "shimmer",
+      "verse",
+      "marin",
+      "cedar",
+    ]);
+    expect(voiceOptions).not.toContain("nova");
+    expect(voiceOptions).not.toContain("onyx");
+    expect(voiceOptions).not.toContain("fable");
+    expect(reasoningOptions).toEqual(["", "minimal", "low", "medium", "high"]);
+    if (model === null) {
+      throw new Error("expected Talk model input");
+    }
+    model.value = "gpt-realtime-mini";
+    model.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(onRealtimeTalkOptionsChange).toHaveBeenCalledWith({ model: "gpt-realtime-mini" });
+  });
+
+  it("renders composer and Talk labels from the active locale", async () => {
+    await i18n.setLocale("zh-CN");
+    const container = renderChatView();
+
+    requireElement(
+      container,
+      `[aria-label="${t("chat.composer.startTalk")}"]`,
+      "localized Start Talk button",
+    );
+    requireElement(
+      container,
+      `[aria-label="${t("chat.composer.attachFile")}"]`,
+      "localized attach file button",
+    );
+    expect(container.querySelector("textarea")?.getAttribute("placeholder")).toBe(
+      t("chat.composer.placeholder", { name: "Val" }),
+    );
+    expect(container.textContent).not.toContain("Start Talk");
   });
 
   it("lets users dismiss Talk start errors", () => {
@@ -680,13 +777,13 @@ describe("chat attachment picker", () => {
     input!.dispatchEvent(new Event("change", { bubbles: true }));
 
     await vi.waitFor(() => {
-      expect(onAttachmentsChange).toHaveBeenCalledWith([
-        expect.objectContaining({
-          fileName: "brief.pdf",
-          mimeType: "application/pdf",
-          sizeBytes: file.size,
-        }),
-      ]);
+      const attachments = onAttachmentsChange.mock.calls[0]?.[0] as
+        | Array<{ fileName?: string; mimeType?: string; sizeBytes?: number }>
+        | undefined;
+      expect(attachments).toHaveLength(1);
+      expect(attachments?.[0]?.fileName).toBe("brief.pdf");
+      expect(attachments?.[0]?.mimeType).toBe("application/pdf");
+      expect(attachments?.[0]?.sizeBytes).toBe(file.size);
     });
 
     const nextAttachments = onAttachmentsChange.mock.calls[0]?.[0] ?? [];
@@ -763,6 +860,10 @@ describe("chat sidebar raw content", () => {
 });
 
 describe("chat welcome", () => {
+  afterEach(async () => {
+    await i18n.setLocale("en");
+  });
+
   function renderWelcome(params: {
     assistantAvatar: string | null;
     assistantAvatarUrl?: string | null;
@@ -806,9 +907,22 @@ describe("chat welcome", () => {
     expect(fallbackAvatar?.getAttribute("src")).toBe("apple-touch-icon.png");
     expect(fallbackAvatar?.getAttribute("alt")).toBe("Val");
   });
+
+  it("renders welcome text from the active locale", async () => {
+    await i18n.setLocale("zh-CN");
+    const container = renderWelcome({ assistantAvatar: "VC", assistantAvatarUrl: null });
+
+    expect(container.textContent).toContain(t("chat.welcome.ready"));
+    expect(container.textContent).toContain(t("chat.welcome.suggestions.whatCanYouDo"));
+    expect(container.textContent).not.toContain("Ready to chat");
+  });
 });
 
 describe("chat session controls", () => {
+  afterEach(async () => {
+    await i18n.setLocale("en");
+  });
+
   it("filters chat sessions by agent and switches to that agent's recent session", () => {
     const { state } = createChatHeaderState();
     const onSwitchSession = vi.fn();
@@ -855,6 +969,30 @@ describe("chat session controls", () => {
     agentSelect!.dispatchEvent(new Event("change", { bubbles: true }));
 
     expect(onSwitchSession).toHaveBeenCalledWith(state, "agent:beta:dashboard:beta-recent");
+  });
+
+  it("renders selector labels from the active locale", async () => {
+    await i18n.setLocale("zh-CN");
+    const { state } = createChatHeaderState();
+    const container = document.createElement("div");
+    render(renderChatSessionSelect(state), container);
+
+    requireElement(
+      container,
+      `[aria-label="${t("chat.selectors.session")}"]`,
+      "localized session selector",
+    );
+    requireElement(
+      container,
+      `[aria-label="${t("chat.selectors.model")}"]`,
+      "localized model selector",
+    );
+    requireElement(
+      container,
+      `[aria-label="${t("chat.selectors.thinkingLevel")}"]`,
+      "localized thinking level selector",
+    );
+    expect(container.innerHTML).not.toContain("Chat session");
   });
 
   it("falls back to the selected agent's main session when no sessions exist yet", () => {
@@ -959,7 +1097,7 @@ describe("chat session controls", () => {
       key: "main",
       model: "openai/gpt-5-mini",
     });
-    expect(request).not.toHaveBeenCalledWith("chat.history", expect.anything());
+    expect(request.mock.calls.some(([method]) => method === "chat.history")).toBe(false);
     await flushTasks();
     expect(loadSessionsMock).toHaveBeenCalledTimes(1);
     expect(state.sessionsResult?.sessions[0]?.model).toBe("gpt-5-mini");
