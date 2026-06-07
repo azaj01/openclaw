@@ -1,3 +1,4 @@
+// Verifies shell environment key metadata used by config IO.
 import { describe, expect, it, vi } from "vitest";
 
 const listKnownChannelEnvVarNames = vi.hoisted(() => vi.fn(() => ["DISCORD_BOT_TOKEN"]));
@@ -9,6 +10,11 @@ vi.mock("../secrets/channel-env-vars.js", () => ({
 
 vi.mock("../secrets/provider-env-vars.js", () => ({
   listKnownProviderAuthEnvVarNames,
+  resolveProviderAuthLookupMaps: () => ({
+    aliasMap: {},
+    envCandidateMap: {},
+    authEvidenceMap: {},
+  }),
 }));
 
 describe("config io shell env expected keys", () => {
@@ -28,11 +34,15 @@ describe("config io shell env expected keys", () => {
     const { resolveShellEnvExpectedKeys } = await import("./shell-env-expected-keys.js");
 
     const expectedKeys = resolveShellEnvExpectedKeys({} as NodeJS.ProcessEnv);
-    expect(expectedKeys).toContain("OPENAI_API_KEY");
-    expect(expectedKeys).toContain("ARCEEAI_API_KEY");
-    expect(expectedKeys).toContain("FIREWORKS_ALT_API_KEY");
-    expect(expectedKeys).toContain("DISCORD_BOT_TOKEN");
-    expect(expectedKeys).toContain("SLACK_BOT_TOKEN");
-    expect(expectedKeys).toContain("OPENCLAW_GATEWAY_TOKEN");
+    expect(expectedKeys).toEqual([
+      "OPENAI_API_KEY",
+      "ARCEEAI_API_KEY",
+      "FIREWORKS_ALT_API_KEY",
+      "DISCORD_BOT_TOKEN",
+      "SLACK_BOT_TOKEN",
+      "SLACK_APP_TOKEN",
+      "OPENCLAW_GATEWAY_TOKEN",
+      "OPENCLAW_GATEWAY_PASSWORD",
+    ]);
   });
 });

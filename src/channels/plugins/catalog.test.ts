@@ -1,4 +1,10 @@
-import { describe, expect, it } from "vitest";
+// Channel plugin catalog tests cover plugin catalog entries and metadata normalization.
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("../../plugins/channel-catalog-registry.js", () => ({
+  listChannelCatalogEntries: () => [],
+}));
+
 import { getChannelPluginCatalogEntry } from "./catalog.js";
 
 describe("channel plugin catalog", () => {
@@ -12,7 +18,7 @@ describe("channel plugin catalog", () => {
     expect(wecom?.id).toBe("wecom");
     expect(wecom?.pluginId).toBe("wecom-openclaw-plugin");
     expect(wecom?.trustedSourceLinkedOfficialInstall).toBe(true);
-    expect(wecom?.install?.npmSpec).toBe("@wecom/wecom-openclaw-plugin@2026.4.23");
+    expect(wecom?.install?.npmSpec).toBe("@wecom/wecom-openclaw-plugin@2026.5.7");
 
     const yuanbao = getChannelPluginCatalogEntry("yuanbao", options);
     expect(yuanbao?.id).toBe("yuanbao");

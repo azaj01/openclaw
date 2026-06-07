@@ -1,3 +1,4 @@
+// Backup command tests cover backup create, verify, and runtime output paths.
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +9,7 @@ import * as backupShared from "./backup-shared.js";
 import {
   buildBackupArchiveRoot,
   encodeAbsolutePathForBackupArchive,
+  formatBackupArchiveTimestamp,
   type BackupAsset,
   resolveBackupPlanFromPaths,
   resolveBackupPlanFromDisk,
@@ -43,6 +45,15 @@ type CapturedBackupManifest = {
 
 describe("backup commands", () => {
   let tempHome: TempHomeEnv;
+
+  function requireFirstMockArg<T>(mock: { mock: { calls: T[][] } }, label: string): T {
+    const call = mock.mock.calls[0];
+    if (!call) {
+      throw new Error(`expected ${label} call`);
+    }
+    const [arg] = call;
+    return arg;
+  }
 
   async function mockWorkspaceBackupPlan(stateDir: string, workspaceDir: string, nowMs: number) {
     vi.spyOn(backupShared, "resolveBackupPlanFromDisk").mockResolvedValue(
@@ -151,6 +162,15 @@ describe("backup commands", () => {
       },
     ]);
   }
+
+  it("formats backup archive timestamps in local time with an explicit offset", () => {
+    expect(formatBackupArchiveTimestamp(Date.UTC(2026, 2, 14, 1, 2, 3, 456), 8 * 60)).toBe(
+      "2026-03-14T09-02-03.456+08-00",
+    );
+    expect(formatBackupArchiveTimestamp(Date.UTC(2026, 2, 14, 1, 2, 3, 456), -5 * 60)).toBe(
+      "2026-03-13T20-02-03.456-05-00",
+    );
+  });
 
   it("collapses default config, credentials, and workspace into the state backup root", async () => {
     const stateDir = path.join(tempHome.home, ".openclaw");
@@ -368,7 +388,7 @@ describe("backup commands", () => {
 
       expect(result.skippedVolatileCount).toBe(1);
       expect(runtime.log).toHaveBeenCalledTimes(1);
-      const payload = vi.mocked(runtime.log).mock.calls[0]?.[0];
+      const payload = requireFirstMockArg(vi.mocked(runtime.log), "runtime log");
       if (typeof payload !== "string") {
         throw new Error("backup test expected JSON string output");
       }
@@ -443,7 +463,7 @@ describe("backup commands", () => {
       const workspaceLink = path.join(linkParent, "workspace-link");
       try {
         await fs.symlink(workspaceDir, workspaceLink);
-        vi.mocked(process.cwd).mockReturnValue(workspaceLink);
+        vi.mocked(process["cwd"]).mockReturnValue(workspaceLink);
         const symlinkNowMs = Date.UTC(2026, 2, 9, 1, 3, 4);
         await mockWorkspaceBackupPlan(stateDir, workspaceDir, symlinkNowMs);
         const symlinkResult = await backupCreateCommand(createBackupTestRuntime(), {

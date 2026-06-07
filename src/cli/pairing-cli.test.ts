@@ -1,6 +1,7 @@
+// Pairing CLI tests cover pairing command registration and pairing status output.
 import { Command } from "commander";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { theme } from "../terminal/theme.js";
+import { theme } from "../../packages/terminal-core/src/theme.js";
 import { registerPairingCli } from "./pairing-cli.js";
 
 const mocks = vi.hoisted(() => ({
@@ -42,6 +43,14 @@ const pairingIdLabels: Record<string, string> = {
   telegram: "telegramUserId",
   discord: "discordUserId",
 };
+
+function requireFirstMockCall(calls: readonly unknown[][], label: string): unknown[] {
+  const call = calls.at(0);
+  if (!call) {
+    throw new Error(`expected ${label} call`);
+  }
+  return call;
+}
 
 vi.mock("../pairing/pairing-store.js", () => ({
   listChannelPairingRequests: mocks.listChannelPairingRequests,
@@ -226,9 +235,10 @@ describe("pairing cli", () => {
         channel: "telegram",
         code: "ABCDEFGH",
       });
-      const replaceCall = replaceConfigFile.mock.calls[0]?.[0] as
-        | { nextConfig?: { commands?: { ownerAllowFrom?: string[] } } }
-        | undefined;
+      const replaceCall = requireFirstMockCall(
+        replaceConfigFile.mock.calls,
+        "config replace",
+      )[0] as { nextConfig?: { commands?: { ownerAllowFrom?: string[] } } } | undefined;
       expect(replaceCall?.nextConfig?.commands?.ownerAllowFrom).toEqual(["telegram:123"]);
       expect(log.mock.calls).toEqual([
         [`${theme.success("Approved")} ${theme.muted("telegram")} sender ${theme.command("123")}.`],

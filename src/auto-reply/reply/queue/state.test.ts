@@ -1,3 +1,4 @@
+// Tests queue state storage, dedupe, and cleanup primitives.
 import { afterEach, describe, expect, it } from "vitest";
 import { clearFollowupQueue, getFollowupQueue, refreshQueuedFollowupSession } from "./state.js";
 import type { FollowupRun } from "./types.js";
@@ -28,7 +29,7 @@ function makeRun(): FollowupRun["run"] {
 
 describe("refreshQueuedFollowupSession", () => {
   it("retargets queued runs to the persisted selection", () => {
-    const queue = getFollowupQueue(QUEUE_KEY, { mode: "queue" });
+    const queue = getFollowupQueue(QUEUE_KEY, { mode: "followup" });
     const lastRun = makeRun();
     const queuedRun: FollowupRun = {
       prompt: "queued message",
@@ -63,11 +64,11 @@ describe("refreshQueuedFollowupSession", () => {
   });
 
   it("retargets queued runs with user model override source", () => {
-    const queue = getFollowupQueue(QUEUE_KEY, { mode: "queue" });
+    const queue = getFollowupQueue(QUEUE_KEY, { mode: "followup" });
     const queuedRun: FollowupRun = {
       prompt: "queued message",
       enqueuedAt: Date.now(),
-      run: makeRun(),
+      run: { ...makeRun(), hasAutoFallbackProvenance: true },
     };
     queue.items.push(queuedRun);
 

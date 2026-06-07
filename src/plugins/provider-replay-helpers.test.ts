@@ -1,3 +1,4 @@
+/** Tests provider replay helper normalization and deterministic ordering. */
 import { describe, expect, it } from "vitest";
 import {
   buildAnthropicReplayPolicyForModel,
@@ -78,6 +79,7 @@ describe("provider replay helpers", () => {
       applyAssistantFirstOrderingFix: false,
       validateGeminiTurns: false,
       validateAnthropicTurns: false,
+      allowSyntheticToolResults: true,
     });
     expect(policy).not.toHaveProperty("sanitizeToolCallIds");
     expect(policy).not.toHaveProperty("toolCallIdMode");

@@ -1,3 +1,4 @@
+// Verifies group-policy normalization and runtime resolution.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "./config.js";
 import {
@@ -167,6 +168,68 @@ describe("resolveChannelGroupPolicy", () => {
         groupId: "123@g.us",
         configuredGroupDefaultsToNoMention: true,
       }),
+    ).toBe(false);
+  });
+
+  it("falls back to root channel groups when account.groups is an empty object (regression: #79427)", () => {
+    const cfg = {
+      channels: {
+        telegram: {
+          groupPolicy: "allowlist",
+          groups: {
+            "-100123": { requireMention: false },
+          },
+          accounts: {
+            default: { botToken: "123:default", groups: {} },
+          },
+        },
+      },
+    } as OpenClawConfig;
+
+    const policy = resolveChannelGroupPolicy({
+      cfg,
+      channel: "telegram",
+      groupId: "-100123",
+      accountId: "default",
+    });
+
+    expect(policy.allowlistEnabled).toBe(true);
+    expect(policy.allowed).toBe(true);
+  });
+
+  it("uses populated account.groups instead of root when both are configured", () => {
+    const cfg = {
+      channels: {
+        telegram: {
+          groupPolicy: "allowlist",
+          groups: {
+            "-100root": { requireMention: false },
+          },
+          accounts: {
+            default: {
+              botToken: "123:default",
+              groups: { "-100account": { requireMention: false } },
+            },
+          },
+        },
+      },
+    } as OpenClawConfig;
+
+    expect(
+      resolveChannelGroupPolicy({
+        cfg,
+        channel: "telegram",
+        groupId: "-100account",
+        accountId: "default",
+      }).allowed,
+    ).toBe(true);
+    expect(
+      resolveChannelGroupPolicy({
+        cfg,
+        channel: "telegram",
+        groupId: "-100root",
+        accountId: "default",
+      }).allowed,
     ).toBe(false);
   });
 });

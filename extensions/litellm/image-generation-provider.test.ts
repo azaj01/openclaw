@@ -1,3 +1,4 @@
+// Litellm tests cover image generation provider plugin behavior.
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { buildLitellmImageGenerationProvider } from "./image-generation-provider.js";
 
@@ -193,7 +194,7 @@ describe("litellm image generation provider", () => {
     });
 
     expect(mockObjectArg(postJsonRequestMock).url).toBe("http://localhost:4000/images/edits");
-    const call = postJsonRequestMock.mock.calls[0][0] as { body: { images: unknown[] } };
+    const call = postJsonRequestMock.mock.calls[0]?.[0] as { body: { images: unknown[] } };
     expect(call.body.images).toHaveLength(1);
   });
 

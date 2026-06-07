@@ -1,3 +1,4 @@
+// Configure gateway tests cover interactive gateway auth, port, bind, and remote settings.
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -27,7 +28,7 @@ vi.mock("./configure.shared.js", () => ({
   confirm: mocks.confirm,
 }));
 
-vi.mock("../terminal/note.js", () => ({
+vi.mock("../../packages/terminal-core/src/note.js", () => ({
   note: mocks.note,
 }));
 
@@ -83,7 +84,11 @@ async function runGatewayPrompt(params: {
   );
 
   const result = await promptGatewayConfig(params.baseConfig ?? {}, makeRuntime());
-  const [call] = mocks.buildGatewayAuthConfig.mock.calls[0] ?? [];
+  const authConfigCall = mocks.buildGatewayAuthConfig.mock.calls[0];
+  if (!authConfigCall) {
+    throw new Error("expected gateway auth config call");
+  }
+  const [call] = authConfigCall;
   if (!call) {
     throw new Error("expected gateway auth config input");
   }

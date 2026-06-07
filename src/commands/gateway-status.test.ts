@@ -1,3 +1,4 @@
+// Gateway status command tests cover probe targets, JSON/text output, SSH tunnels, and warnings.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GatewayProbeResult } from "../gateway/probe.js";
 import type { GatewayBonjourBeacon } from "../infra/bonjour-discovery.js";
@@ -257,6 +258,14 @@ function requireProbeCall(url: string): ProbeGatewayCall {
     throw new Error(`Expected gateway probe call for ${url}`);
   }
   return call;
+}
+
+function requireSshForwardCall(index = 0): Record<string, unknown> {
+  const [call] = startSshPortForward.mock.calls[index] ?? [];
+  if (!call || typeof call !== "object") {
+    throw new Error(`Expected SSH forward call ${index}`);
+  }
+  return call as Record<string, unknown>;
 }
 
 function makeRemoteGatewayConfig(url: string, token = "rtok", localToken = "ltok") {
@@ -968,7 +977,7 @@ describe("gateway-status command", () => {
       await runGatewayStatus(runtime, { timeout: "1000", json: true, sshAuto: true });
 
       expect(startSshPortForward).toHaveBeenCalledTimes(1);
-      const call = startSshPortForward.mock.calls[0]?.[0] as { target: string };
+      const call = requireSshForwardCall();
       expect(call.target).toBe("steipete@goodhost:2222");
     });
   });
@@ -990,10 +999,7 @@ describe("gateway-status command", () => {
       await runGatewayStatus(runtime, { timeout: "1000", json: true });
 
       expect(startSshPortForward).toHaveBeenCalledTimes(1);
-      const call = startSshPortForward.mock.calls[0]?.[0] as {
-        target: string;
-        identity?: string;
-      };
+      const call = requireSshForwardCall();
       expect(call.target).toBe("steipete@peters-mac-studio-1.sheep-coho.ts.net:2222");
       expect(call.identity).toBe("/tmp/id_ed25519");
     });
@@ -1010,9 +1016,7 @@ describe("gateway-status command", () => {
       startSshPortForward.mockClear();
       await runGatewayStatus(runtime, { timeout: "1000", json: true });
 
-      const call = startSshPortForward.mock.calls[0]?.[0] as {
-        target: string;
-      };
+      const call = requireSshForwardCall();
       expect(call.target).toBe("studio.example");
     });
   });
@@ -1037,9 +1041,7 @@ describe("gateway-status command", () => {
       sshIdentity: "/tmp/explicit_id",
     });
 
-    const call = startSshPortForward.mock.calls[0]?.[0] as {
-      identity?: string;
-    };
+    const call = requireSshForwardCall();
     expect(call.identity).toBe("/tmp/explicit_id");
   });
 });

@@ -1,3 +1,4 @@
+// Cron get-job tests cover lookup behavior for scheduled jobs.
 import { describe, expect, it, vi } from "vitest";
 import { CronService } from "./service.js";
 import {
@@ -60,12 +61,7 @@ describe("CronService.getJob", () => {
         payload: { kind: "systemEvent", text: "ping" },
         delivery: { mode: "webhook", to: "https://example.invalid/cron" },
       });
-      await expect(cron.readJob(webhookJob.id)).resolves.toMatchObject({
-        delivery: {
-          mode: "webhook",
-          to: "https://example.invalid/cron",
-        },
-      });
+      await expect(cron.readJob(webhookJob.id)).resolves.toEqual(webhookJob);
       expect(cron.getJob(webhookJob.id)?.delivery).toEqual({
         mode: "webhook",
         to: "https://example.invalid/cron",
@@ -91,10 +87,7 @@ describe("CronService.getJob", () => {
 
     const reader = createCronService(storePath, false);
 
-    await expect(reader.readJob(persisted.id)).resolves.toMatchObject({
-      id: persisted.id,
-      name: "persisted-job",
-    });
+    await expect(reader.readJob(persisted.id)).resolves.toEqual(persisted);
     if (reader.getJob(persisted.id) === undefined) {
       throw new Error("Expected persisted cron job");
     }

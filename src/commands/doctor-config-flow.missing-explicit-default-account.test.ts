@@ -1,3 +1,4 @@
+// Doctor default-account tests cover warnings for missing explicit default channel accounts.
 import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { collectMissingExplicitDefaultAccountWarnings } from "./doctor/shared/default-account-warnings.js";
@@ -121,7 +122,8 @@ describe("collectMissingExplicitDefaultAccountWarnings", () => {
 
     const warnings = collectMissingExplicitDefaultAccountWarnings(cfg);
     expect(warnings).toHaveLength(2);
-    expect(warnings.some((warning) => warning.includes("channels.telegram"))).toBe(true);
-    expect(warnings.some((warning) => warning.includes("channels.slack"))).toBe(true);
+    const warningOutput = warnings.join("\n");
+    expect(warningOutput).toContain("channels.telegram");
+    expect(warningOutput).toContain("channels.slack");
   });
 });

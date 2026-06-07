@@ -1,3 +1,5 @@
+// Music background tests cover task-run creation, progress recording, and
+// completion delivery through announcement agents or direct fallback sends.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MUSIC_GENERATION_TASK_KIND } from "../music-generation-task-status.js";
 import {
@@ -22,7 +24,9 @@ const {
 } = await import("./music-generate-background.js");
 
 function getDeliveredInternalEvents(): Array<Record<string, unknown>> {
-  const params = announceDeliveryMocks.deliverSubagentAnnouncement.mock.calls[0]?.[0] as
+  // Completion agents receive internal events; tests inspect them to keep the
+  // visible-reply media contract explicit.
+  const params = announceDeliveryMocks.deliverSubagentAnnouncement.mock.calls.at(0)?.[0] as
     | { internalEvents?: unknown }
     | undefined;
   if (!Array.isArray(params?.internalEvents)) {
@@ -112,10 +116,10 @@ describe("music generate background helpers", () => {
     });
 
     expect(taskDeliveryRuntimeMocks.sendMessage).not.toHaveBeenCalled();
-    expect(announceDeliveryMocks.deliverSubagentAnnouncement).toHaveBeenCalled();
+    expect(announceDeliveryMocks.deliverSubagentAnnouncement).toHaveBeenCalledTimes(1);
   });
 
-  it("warns channel completion agents that normal final replies are private", async () => {
+  it("tells channel completion agents to follow the visible-reply contract", async () => {
     announceDeliveryMocks.deliverSubagentAnnouncement.mockResolvedValue({
       delivered: true,
       path: "direct",
@@ -135,8 +139,36 @@ describe("music generate background helpers", () => {
       },
     });
 
-    expectReplyInstructionContains("the user will NOT see your normal assistant final reply");
-    expectReplyInstructionContains("Do not put MEDIA: lines only in your final answer");
+    expectReplyInstructionContains("visible-reply contract");
+    expectReplyInstructionContains("final-reply MEDIA lines");
+  });
+
+  it("delivers failure completion notices directly", async () => {
+    announceDeliveryMocks.deliverSubagentAnnouncement.mockResolvedValue({
+      delivered: false,
+      path: "direct",
+      reason: "generated_media_missing",
+      error: "completion agent did not deliver generated media",
+    });
+    const completion = createMediaCompletionFixture({
+      runId: "tool:music_generate:abc",
+      taskLabel: "night-drive synthwave",
+      result: "provider failed",
+    });
+
+    await wakeMusicGenerationTaskCompletion({
+      ...completion,
+      status: "error",
+      statusLabel: "failed",
+    });
+
+    expect(taskDeliveryRuntimeMocks.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Music generation failed: provider failed",
+        idempotencyKey: "music_generate:task-123:error:direct",
+      }),
+    );
+    expect(announceDeliveryMocks.deliverSubagentAnnouncement).toHaveBeenCalledTimes(1);
   });
 
   it.each(["agent:main:discord:guild-123:channel-456", "agent:main:whatsapp:123@g.us"])(
@@ -161,8 +193,8 @@ describe("music generate background helpers", () => {
         },
       });
 
-      expectReplyInstructionContains("the user will NOT see your normal assistant final reply");
-      expectReplyInstructionContains("Do not put MEDIA: lines only in your final answer");
+      expectReplyInstructionContains("visible-reply contract");
+      expectReplyInstructionContains("final-reply MEDIA lines");
     },
   );
 
