@@ -74,6 +74,11 @@ export const TOOL_DISPLAY_CONFIG: ToolDisplayConfig = {
       title: "Attach",
       detailKeys: ["path", "url", "fileName"],
     },
+    api: {
+      emoji: "🌐",
+      title: "API",
+      detailKeys: ["url", "endpoint", "path", "method", "name"],
+    },
     browser: {
       emoji: "🌐",
       title: "Browser",
@@ -280,10 +285,25 @@ export const TOOL_DISPLAY_CONFIG: ToolDisplayConfig = {
       title: "Update Plan",
       detailKeys: ["explanation", "plan.0.step"],
     },
+    spawn_task: {
+      emoji: "✨",
+      title: "Suggest Task",
+      detailKeys: ["title", "tldr", "cwd"],
+    },
+    dismiss_task: {
+      emoji: "🗑️",
+      title: "Dismiss Task",
+      detailKeys: ["task_id", "reason"],
+    },
     skill_workshop: {
       emoji: "🧰",
       title: "Skill Workshop",
       detailKeys: ["action", "name", "proposal_id"],
+    },
+    crestodian: {
+      emoji: "🦀",
+      title: "Crestodian",
+      detailKeys: ["action", "path", "model"],
     },
     gateway: {
       emoji: "🔌",
