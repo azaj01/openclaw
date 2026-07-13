@@ -32,8 +32,8 @@ export type ApplicationTheme = {
 
 export type ApplicationNavigationPreferencesSnapshot = {
   navCollapsed: boolean;
+  navWidth: number;
   sidebarPinnedRoutes: readonly SidebarNavRoute[];
-  sidebarMoreExpanded: boolean;
 };
 
 export type ApplicationNavigationPreferences = {

@@ -150,11 +150,21 @@ struct OpenClawTypographyTests {
         let onboardingSteps = try String(
             contentsOf: Self.sourceURL("Onboarding/OnboardingWizardSteps.swift"),
             encoding: .utf8)
-        let onboardingWizard = try String(
-            contentsOf: Self.sourceURL("Onboarding/OnboardingWizardView.swift"),
-            encoding: .utf8)
+        let onboardingWizard = try [
+            "Onboarding/OnboardingWizardView.swift",
+            "Onboarding/OnboardingWizardConnectionSections.swift",
+            "Onboarding/OnboardingWizardTypes.swift",
+        ].map { path in
+            try String(contentsOf: Self.sourceURL(path), encoding: .utf8)
+        }.joined(separator: "\n")
         let settingsSections = try String(
             contentsOf: Self.sourceURL("Design/SettingsProTabSections.swift"),
+            encoding: .utf8)
+        let settingsSupport = try String(
+            contentsOf: Self.sourceURL("Design/SettingsProTabSupport.swift"),
+            encoding: .utf8)
+        let approvalDialog = try String(
+            contentsOf: Self.sourceURL("Gateway/ExecApprovalPromptDialog.swift"),
             encoding: .utf8)
         let privacyAccess = try String(
             contentsOf: Self.sourceURL("Settings/PrivacyAccessSectionView.swift"),
@@ -172,6 +182,9 @@ struct OpenClawTypographyTests {
         let channels = try String(
             contentsOf: Self.sourceURL("Design/SettingsChannelsDestination.swift"),
             encoding: .utf8)
+        let skills = try String(
+            contentsOf: Self.sourceURL("Design/SettingsSkillsDestination.swift"),
+            encoding: .utf8)
         let docs = try String(contentsOf: Self.sourceURL("Design/OpenClawDocsScreen.swift"), encoding: .utf8)
         let chatTab = try String(contentsOf: Self.sourceURL("Design/ChatProTab.swift"), encoding: .utf8)
         let chatTypography = try String(
@@ -184,10 +197,15 @@ struct OpenClawTypographyTests {
                 .deletingLastPathComponent()
                 .appendingPathComponent("shared/OpenClawKit/Sources/OpenClawChatUI/ChatMessageViews.swift"),
             encoding: .utf8)
+        let chatMarkdownRenderer = try String(
+            contentsOf: Self.iosRootURL()
+                .deletingLastPathComponent()
+                .appendingPathComponent("shared/OpenClawKit/Sources/OpenClawChatUI/ChatMarkdownRenderer.swift"),
+            encoding: .utf8)
 
         #expect(proComponents.contains(".font(OpenClawType.subheadSemiBold)"))
-        #expect(proComponents.contains("Text(primaryActionTitle)"))
-        #expect(proComponents.contains("Text(secondaryActionTitle)"))
+        #expect(proComponents.contains("primaryActionTitle.text"))
+        #expect(proComponents.contains("secondaryActionTitle.text"))
 
         #expect(chatTab.contains("Text(\"Export Transcript\")"))
         #expect(chatTab.contains(".font(OpenClawType.body)"))
@@ -222,7 +240,7 @@ struct OpenClawTypographyTests {
         #expect(onboardingWizard.contains(".font(OpenClawType.subheadSemiBold)"))
         #expect(onboardingWizard.contains("_ title: LocalizedStringKey"))
         #expect(onboardingWizard.contains("_ placeholder: LocalizedStringKey"))
-        #expect(onboardingWizard.contains("if self.developerModeEnabled {"))
+        #expect(onboardingWizard.contains("if self.developerModeEnabled.wrappedValue {"))
         #expect(onboardingWizard.contains("title: \"Same Machine (Dev)\""))
         #expect(onboardingWizard.contains("if lastMode == .developerLocal"))
         #expect(onboardingWizard.contains("self.developerModeEnabled = true"))
@@ -242,16 +260,29 @@ struct OpenClawTypographyTests {
         #expect(onboardingSecureOption.contains(".font(OpenClawType.captionSemiBold)"))
 
         #expect(settingsSections.contains(".font(OpenClawType.body)"))
+        #expect(settingsSections.contains("Text(warningText)"))
+        #expect(settingsSections.contains(".font(OpenClawType.caption)"))
+        #expect(approvalDialog.contains("Text(warningText)"))
+        #expect(approvalDialog.contains(".font(OpenClawType.footnote)"))
+        #expect(approvalDialog.contains("ScrollView {"))
+        #expect(approvalDialog.contains("self.actionFooter"))
+        #expect(approvalDialog.contains("exec-approval-review-scroll"))
+        #expect(approvalDialog.contains("exec-approval-actions"))
+        #expect(approvalDialog.contains("ViewThatFits(in: .horizontal)"))
         #expect(settingsSections.contains("self.settingsToggle(\"Show Talk Control\", isOn: self.$talkButtonEnabled)"))
         #expect(settingsSections.contains("OpenClawToggleIndicator(isOn: isOn.wrappedValue)"))
         #expect(settingsSections.contains("TextField(\"Default Share Instruction\""))
         #expect(settingsSections.contains(".font(OpenClawType.subhead)"))
         #expect(settingsSections.contains("private struct AppearanceSettingsScreen"))
         #expect(settingsSections.contains("Section(\"Gateway\")"))
-        #expect(settingsSections.contains("SettingsDetailRow(\"Address\", value: self.gatewayAddress)"))
+        #expect(settingsSections.contains("SettingsDetailRow(\"Address\", value: .verbatim(self.gatewayAddress))"))
         #expect(settingsSections.contains("func gatewayActionButton"))
         #expect(settingsSections.contains("func settingsToggle"))
         #expect(settingsSections.contains(".font(OpenClawType.subheadSemiBold)"))
+        #expect(settingsSupport.contains("struct SettingsBuildMetadataStrip"))
+        #expect(settingsSupport.contains(".font(OpenClawType.caption2SemiBold)"))
+        #expect(settingsSupport.contains(".font(OpenClawType.monoSmall)"))
+        #expect(settingsSupport.contains("Text(\"Copy Build Info\")"))
         #expect(settingsSections.contains("Text(\"Use Manual Gateway\")")
             || settingsSections.contains("\"Use Manual Gateway\""))
         #expect(settingsSections.contains("func gatewaySecureField"))
@@ -261,7 +292,7 @@ struct OpenClawTypographyTests {
             settingsSections,
             from: "func gatewaySecureField",
             to: "    var voiceFeatureCard")
-        #expect(gatewaySecureField.contains(".accessibilityLabel(placeholder)"))
+        #expect(gatewaySecureField.contains(".accessibilityLabel(Text(placeholder))"))
         #expect(gatewaySecureField.contains(".accessibilityHidden(true)"))
         #expect(gatewaySecureField.contains(".textInputAutocapitalization(.never)"))
         #expect(gatewaySecureField.contains(".autocorrectionDisabled()"))
@@ -269,7 +300,7 @@ struct OpenClawTypographyTests {
         #expect(settingsSections.contains("Text(\"Default\")"))
         let settingsSecurityPicker = try Self.extract(
             settingsSections,
-            from: "Picker(\"Connection security\", selection: self.manualGatewayTLSBinding)",
+            from: "Picker(selection: self.manualGatewayTLSBinding)",
             to: "            .pickerStyle(.segmented)")
         let settingsUnencryptedOption = try Self.extract(
             settingsSecurityPicker,
@@ -294,7 +325,11 @@ struct OpenClawTypographyTests {
         #expect(skillWorkshop.contains("Text(\"Apply\")"))
         #expect(skillWorkshop.contains("Text(\"Reject\")"))
 
-        for source in [agentDestinations, dreaming, instances, channels, docs] {
+        #expect(skills.contains("Text(\"Gateway warning\").font(OpenClawType.headline)"))
+        #expect(skills.contains("Text(\"Acknowledge and install\").font(OpenClawType.subheadSemiBold)"))
+        #expect(skills.contains("prompt: Text(\"Search ClawHub\").font(OpenClawType.body)"))
+
+        for source in [agentDestinations, dreaming, instances, channels, skills, docs] {
             #expect(source.contains(".font(OpenClawType.body)"))
         }
 
@@ -303,6 +338,7 @@ struct OpenClawTypographyTests {
         #expect(!chatMessageViews.contains("font: .body"))
         #expect(!chatMessageViews.contains("Font.body"))
         #expect(!chatMessageViews.contains("Font.callout"))
+        #expect(chatMarkdownRenderer.contains(".font(self.font)"))
         #expect(chatTypography
             .contains("Font.custom(self.macSystemFontName(size: size), size: size, relativeTo: textStyle)"))
         #expect(chatTypography.contains(
@@ -412,7 +448,7 @@ struct OpenClawTypographyTests {
 
                 let window = lines[idx..<min(lines.count, idx + 12)].joined(separator: "\n")
                 let hasLocalFont = fontTokens.contains { window.contains($0) }
-                    || self.hasAllowedBrandedFontParameter(window, in: url)
+                    || self.hasAllowedBrandedFontParameter(window, line: rawLine, in: url)
 
                 if self.isTextOrLabelCall(rawLine), !hasLocalFont {
                     return "\(self.relativePath(url)):\(idx + 1): \(line)"
@@ -437,12 +473,16 @@ struct OpenClawTypographyTests {
             options: .regularExpression) != nil
     }
 
-    private static func hasAllowedBrandedFontParameter(_ window: String, in url: URL) -> Bool {
+    private static func hasAllowedBrandedFontParameter(_ window: String, line: String, in url: URL) -> Bool {
         switch self.relativePath(url) {
         case "apps/ios/Sources/Design/OpenClawProComponents.swift":
-            window.contains(".font(self.titleFont)") || window.contains(".font(self.subtitleFont)")
+            line.contains("Text(key)") ||
+                line.contains("Text(verbatim: value)") ||
+                window.contains(".font(self.titleFont)") ||
+                window.contains(".font(self.subtitleFont)")
         case "apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatMarkdownRenderer.swift":
-            window.contains(".font(self.font)")
+            // Qualified values are composed here, then styled at the prose render boundary.
+            line.contains("SwiftUI.Text(") || window.contains(".font(self.font)")
         default:
             false
         }

@@ -37,7 +37,6 @@ export {
   clearExpiredCooldowns,
   getSoonestCooldownExpiry,
   isProfileInCooldown,
-  resolveProfileUnusableUntil,
 } from "./usage-state.js";
 
 const authProfileUsageDeps = {
@@ -124,6 +123,9 @@ function shouldProbeWhamForFailure(
   return (
     profile?.type === "oauth" &&
     Boolean(profile.access) &&
+    // Expired access tokens are routine and refreshable; probing with one
+    // guarantees a 401 that looks like a 12h token-family outage.
+    isFutureDateTimestampMs(profile.expires) &&
     normalizedProvider === "openai" &&
     (reason === "rate_limit" ||
       reason === "empty_response" ||
@@ -969,4 +971,3 @@ export async function clearAuthProfileCooldown(params: {
     logDroppedAuthProfileBookkeeping("clear_cooldown", profileId);
   }
 }
-export { testing as __testing };

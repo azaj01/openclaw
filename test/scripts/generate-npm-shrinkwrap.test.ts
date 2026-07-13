@@ -12,13 +12,16 @@ import {
   exactOverrideRulesFromOverrides,
   exactVersionFromOverrideSpec,
   normalizeNpmVersionDrift,
+  normalizeOverrides,
   packageJsonForShrinkwrap,
   packageDependencyInputsChanged,
   pnpmLockOverrideVersionForVersions,
   parsePnpmPackageKey,
   parseLockPackagePath,
   resolvePackageDirs,
+  resolveShrinkwrapJobs,
   restoreCurrentPnpmLockedPackages,
+  runBoundedTasks,
   shouldUseLegacyPeerDepsForShrinkwrap,
   shrinkwrapPackageDirsForChangedPaths,
 } from "../../scripts/generate-npm-shrinkwrap.mjs";
@@ -74,6 +77,20 @@ describe("generate-npm-shrinkwrap", () => {
     });
   });
 
+  it("normalizes pnpm scoped override selectors for npm shrinkwrap", () => {
+    expect(
+      normalizeOverrides({
+        "openclaw@2026.5.28>undici": "8.5.0",
+        tar: 7.5,
+      }),
+    ).toEqual({
+      "openclaw@2026.5.28": {
+        undici: "8.5.0",
+      },
+      tar: "7.5",
+    });
+  });
+
   it("rejects short flag package selectors before resolving shrinkwrap targets", () => {
     expect(() => resolvePackageDirs(["--package-dir", "-h"])).toThrow(
       "--package-dir requires a package directory.",
@@ -84,6 +101,33 @@ describe("generate-npm-shrinkwrap", () => {
     expect(() => resolvePackageDirs(["--changed", "--head", "-h"])).toThrow(
       "--head requires a git ref.",
     );
+    expect(() => resolvePackageDirs(["--jobs", "-h"])).toThrow(
+      "--jobs requires a positive integer.",
+    );
+  });
+
+  it("bounds shrinkwrap package concurrency while preserving result order", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const results = await runBoundedTasks(["slow", "fast", "last"], 2, async (value) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, value === "slow" ? 30 : 5);
+      });
+      active -= 1;
+      return value;
+    });
+
+    expect(maxActive).toBe(2);
+    expect(results).toEqual(["slow", "fast", "last"]);
+  });
+
+  it("validates shrinkwrap worker counts from flags and environment", () => {
+    expect(resolveShrinkwrapJobs("3", {})).toBe(3);
+    expect(resolveShrinkwrapJobs(undefined, { OPENCLAW_NPM_SHRINKWRAP_JOBS: "2" })).toBe(2);
+    expect(() => resolveShrinkwrapJobs("0", {})).toThrow("invalid OPENCLAW_NPM_SHRINKWRAP_JOBS: 0");
+    expect(() => resolveShrinkwrapJobs("17", {})).toThrow("maximum is 16");
   });
 
   it("accepts strict npm shrinkwrap command timeout and buffer overrides", () => {
@@ -462,6 +506,12 @@ describe("generate-npm-shrinkwrap", () => {
     ).toEqual(["extensions/acpx"]);
   });
 
+  it("targets changed tracked shrinkwraps for private packages", () => {
+    expect(
+      shrinkwrapPackageDirsForChangedPaths(["extensions/vault/package.json"]).map(repoRelativePath),
+    ).toEqual(["extensions/vault"]);
+  });
+
   it("falls back to every shrinkwrap when lockfile ownership is ambiguous", () => {
     const packageDirs = shrinkwrapPackageDirsForChangedPaths(["pnpm-lock.yaml"]).map(
       repoRelativePath,
@@ -469,6 +519,7 @@ describe("generate-npm-shrinkwrap", () => {
 
     expect(packageDirs).toContain("");
     expect(packageDirs).toContain("extensions/acpx");
+    expect(packageDirs).toContain("extensions/vault");
   });
 
   it("falls back to every shrinkwrap when mixed lockfile changes do not map to packages", () => {

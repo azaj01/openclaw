@@ -1,6 +1,7 @@
 // Media Core module implements mime behavior.
 import path from "node:path";
 import { type MediaKind, mediaKindFromMime } from "./constants.js";
+import { extnameFromAnyPath } from "./file-name.js";
 import { createLazyImportLoader } from "./lazy-import.js";
 
 /** Maximum byte prefix passed to dependency MIME sniffers for bounded memory/CPU work. */
@@ -144,12 +145,20 @@ export function getFileExtension(filePath?: string | null): string | undefined {
   try {
     if (/^https?:\/\//i.test(filePath)) {
       const url = new URL(filePath);
-      return path.extname(url.pathname).toLowerCase() || undefined;
+      let filename = url.pathname.slice(url.pathname.lastIndexOf("/") + 1);
+      try {
+        // Decode only the URL filename while keeping encoded separators literal.
+        const decodable = filename.replace(/%2f/gi, "%252F").replace(/%5c/gi, "%255C");
+        filename = decodeURIComponent(decodable);
+      } catch {
+        // Preserve the raw filename when its own percent encoding is malformed.
+      }
+      return path.posix.extname(filename).toLowerCase() || undefined;
     }
   } catch {
     // fall back to plain path parsing
   }
-  const ext = path.extname(filePath).toLowerCase();
+  const ext = extnameFromAnyPath(filePath).toLowerCase();
   return ext || undefined;
 }
 
