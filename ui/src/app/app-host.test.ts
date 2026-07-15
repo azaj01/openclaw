@@ -3,12 +3,17 @@
 import { render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
-import { navigationSurfaceIsHidden, renderFloatingUpdateCard } from "./app-host.ts";
+import {
+  BROWSER_PANEL_TOGGLE_EVENT,
+  TERMINAL_PANEL_TOGGLE_EVENT,
+} from "../components/panel-toggle-contract.ts";
+import "./app-host.ts";
 import type {
   ApplicationContext,
   ApplicationGateway,
   ApplicationGatewaySnapshot,
 } from "./context.ts";
+import { navigationSurfaceIsHidden, renderFloatingUpdateCard } from "./navigation-surface.ts";
 
 type AppLifecycleState = {
   loginToken: string;
@@ -37,6 +42,34 @@ type ShellKeyboardState = {
   };
   handleDocumentKeydown: (event: KeyboardEvent) => void;
 };
+
+type TestOptionalCustomElement = {
+  tagName: string;
+  label: string;
+  loadModule: () => Promise<unknown>;
+};
+
+type ShellLazySurfaceState = ShellKeyboardState & {
+  browserPanelElement: TestOptionalCustomElement;
+  commandPaletteElement: TestOptionalCustomElement;
+  handleDeferredBrowserToggle: (event: Event) => void;
+  handleDeferredTerminalToggle: (event: Event) => void;
+  terminalPanelElement: TestOptionalCustomElement;
+};
+
+let lazyElementSequence = 0;
+
+function createLazyElementSpec(label: string): TestOptionalCustomElement {
+  lazyElementSequence += 1;
+  const tagName = `openclaw-app-host-lazy-${lazyElementSequence}`;
+  return {
+    tagName,
+    label,
+    loadModule: async () => {
+      customElements.define(tagName, class extends HTMLElement {});
+    },
+  };
+}
 
 type ShellNavigationState = {
   runtime: {
@@ -290,6 +323,86 @@ describe("OpenClaw shell settings search", () => {
 });
 
 describe("OpenClaw shell keyboard shortcuts", () => {
+  it("loads and toggles the command palette on its first shortcut", async () => {
+    const element = createLazyElementSpec("command palette");
+    const togglePalette = vi.fn();
+    const shell = document.createElement("openclaw-app-shell") as unknown as ShellLazySurfaceState;
+    shell.commandPaletteElement = element;
+    Object.defineProperty(shell, "updateComplete", {
+      configurable: true,
+      get: () => Promise.resolve(true),
+    });
+    Object.defineProperty(shell, "commandPalette", {
+      configurable: true,
+      get: () =>
+        customElements.get(element.tagName)
+          ? { isOpen: false, openPalette: vi.fn(), togglePalette }
+          : undefined,
+    });
+    const event = new KeyboardEvent("keydown", {
+      key: "k",
+      ctrlKey: true,
+      cancelable: true,
+    });
+
+    shell.handleDocumentKeydown(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(togglePalette).toHaveBeenCalledOnce());
+  });
+
+  it("delivers first panel toggles after their lazy modules load", async () => {
+    const terminalElement = createLazyElementSpec("terminal panel");
+    const browserElement = createLazyElementSpec("browser panel");
+    const terminalToggle = vi.fn();
+    const browserToggle = vi.fn();
+    const shell = document.createElement("openclaw-app-shell") as unknown as ShellLazySurfaceState;
+    shell.terminalPanelElement = terminalElement;
+    shell.browserPanelElement = browserElement;
+    shell.runtime = {
+      context: {
+        gateway: {
+          snapshot: {
+            connected: true,
+            hello: {
+              auth: { role: "operator", scopes: ["operator.admin"] },
+              features: { methods: ["terminal.open", "browser.request"] },
+            },
+          },
+        },
+        config: { current: { terminalEnabled: true } },
+      } as unknown as ApplicationContext,
+    };
+    Object.defineProperty(shell, "updateComplete", {
+      configurable: true,
+      get: () => Promise.resolve(true),
+    });
+    Object.defineProperty(shell, "querySelector", {
+      configurable: true,
+      value: (selector: string) => {
+        if (selector === terminalElement.tagName) {
+          return { handleToggleRequest: terminalToggle };
+        }
+        if (selector === browserElement.tagName) {
+          return { handleToggleRequest: browserToggle };
+        }
+        return null;
+      },
+    });
+    const terminalEvent = new CustomEvent(TERMINAL_PANEL_TOGGLE_EVENT, {
+      detail: { dock: "right", open: true },
+    });
+    const browserEvent = new CustomEvent(BROWSER_PANEL_TOGGLE_EVENT);
+
+    shell.handleDeferredTerminalToggle(terminalEvent);
+    shell.handleDeferredBrowserToggle(browserEvent);
+
+    await vi.waitFor(() => {
+      expect(terminalToggle).toHaveBeenCalledWith(terminalEvent);
+      expect(browserToggle).toHaveBeenCalledWith(browserEvent);
+    });
+  });
+
   it("opens Settings with Shift-Command-Comma", () => {
     const navigate = vi.fn();
     const shell = document.createElement("openclaw-app-shell") as unknown as ShellKeyboardState;
@@ -428,18 +541,16 @@ describe("OpenClaw shell keyboard shortcuts", () => {
 describe("OpenClaw shell update affordance", () => {
   it("renders a floating card only while desktop navigation is collapsed", () => {
     const container = document.createElement("div");
-    const updateAvailable = {
-      currentVersion: "2026.7.1",
-      latestVersion: "2026.7.2",
-      channel: "stable",
-    };
     const shared = {
       onboarding: false,
-      updateAvailable,
+      updateAvailable: {
+        currentVersion: "2026.7.1",
+        latestVersion: "2026.7.2",
+        channel: "stable" as const,
+      },
       updateRunning: false,
       onUpdate: vi.fn(),
     };
-
     const collapsed = navigationSurfaceIsHidden({
       navCollapsed: true,
       navDrawerOpen: false,
@@ -457,7 +568,7 @@ describe("OpenClaw shell update affordance", () => {
     expect(container.querySelector("openclaw-sidebar-update-card")).toBeNull();
   });
 
-  it("treats the mobile navigation surface as hidden while its drawer is closed", () => {
+  it("treats a closed mobile drawer as hidden navigation", () => {
     expect(
       navigationSurfaceIsHidden({
         navCollapsed: false,

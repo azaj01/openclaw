@@ -651,6 +651,10 @@
       "types": "./dist/plugin-sdk/hook-runtime.d.ts",
       "default": "./dist/plugin-sdk/hook-runtime.js"
     },
+    "./plugin-sdk/html-entity-runtime": {
+      "types": "./dist/plugin-sdk/html-entity-runtime.d.ts",
+      "default": "./dist/plugin-sdk/html-entity-runtime.js"
+    },
     "./plugin-sdk/host-runtime": {
       "types": "./dist/plugin-sdk/host-runtime.d.ts",
       "default": "./dist/plugin-sdk/host-runtime.js"
@@ -990,6 +994,10 @@
     "./plugin-sdk/inline-image-data-url-runtime": {
       "types": "./dist/plugin-sdk/inline-image-data-url-runtime.d.ts",
       "default": "./dist/plugin-sdk/inline-image-data-url-runtime.js"
+    },
+    "./plugin-sdk/node-host": {
+      "types": "./dist/plugin-sdk/node-host.d.ts",
+      "default": "./dist/plugin-sdk/node-host.js"
     },
     "./plugin-sdk/response-limit-runtime": {
       "types": "./dist/plugin-sdk/response-limit-runtime.d.ts",
@@ -1554,6 +1562,7 @@
     "check:docs": "pnpm format:docs:check && pnpm lint:docs && pnpm docs:check-mdx && pnpm docs:check-i18n-glossary && pnpm docs:check-links && pnpm docs:map:check",
     "check:host-env-policy:swift": "node scripts/generate-host-env-security-policy-swift.mjs --check",
     "check:import-cycles": "node --import tsx scripts/check-import-cycles.ts",
+    "check:loc": "node --import tsx scripts/check-ts-max-loc.ts",
     "check:madge-import-cycles": "node --import tsx scripts/check-madge-import-cycles.ts",
     "check:media-download-helpers": "node scripts/check-media-download-helper-roundtrip.mjs",
     "check:no-conflict-markers": "node scripts/check-no-conflict-markers.mjs",
@@ -1674,8 +1683,6 @@
     "lint:extensions:no-deprecated-channel-access": "node --import tsx scripts/check-no-deprecated-channel-access.ts",
     "lint:extensions:telegram-grammy-types": "node scripts/check-telegram-grammy-types-imports.mjs",
     "lint:extensions": "node scripts/run-oxlint.mjs --tsconfig config/tsconfig/oxlint.extensions.json extensions",
-    "lint:extensions:bundled": "node scripts/run-bundled-extension-oxlint.mjs",
-    "lint:extensions:channels": "node scripts/run-extension-channel-oxlint.mjs",
     "lint:extensions:no-guarded-wildcard-reexports": "node scripts/check-extension-wildcard-reexports.mjs",
     "lint:extensions:no-plugin-sdk-internal": "node scripts/check-extension-plugin-sdk-boundary.mjs --mode=plugin-sdk-internal",
     "lint:extensions:no-plugin-sdk-wildcard-reexports": "node scripts/check-plugin-sdk-wildcard-reexports.mjs",
@@ -1744,8 +1751,10 @@
     "prompt:snapshots:check": "node --import tsx scripts/generate-prompt-snapshots.ts --check",
     "prompt:snapshots:gen": "node --import tsx scripts/generate-prompt-snapshots.ts --write",
     "prompt:snapshots:sync-codex-model": "node --import tsx scripts/sync-codex-model-prompt-fixture.ts",
-    "protocol:check": "pnpm protocol:gen && pnpm protocol:gen:swift && git diff --exit-code -- dist/protocol.schema.json apps/shared/OpenClawKit/Sources/OpenClawProtocol/GatewayModels.swift",
+    "protocol:check": "pnpm protocol:gen && pnpm protocol:gen:swift && pnpm protocol:gen:kotlin && git diff --exit-code -- dist/protocol.schema.json apps/shared/OpenClawKit/Sources/OpenClawProtocol/GatewayModels.swift apps/android/app/src/main/java/ai/openclaw/app/gateway/GatewayProtocol.kt apps/android/app/src/main/java/ai/openclaw/app/protocol/OpenClawProtocolConstants.kt",
+    "protocol:check:kotlin": "pnpm protocol:gen:kotlin && git diff --exit-code -- apps/android/app/src/main/java/ai/openclaw/app/gateway/GatewayProtocol.kt apps/android/app/src/main/java/ai/openclaw/app/protocol/OpenClawProtocolConstants.kt",
     "protocol:gen": "node --import tsx scripts/protocol-gen.ts",
+    "protocol:gen:kotlin": "node --import tsx scripts/protocol-gen-kotlin.ts",
     "protocol:gen:swift": "node --import tsx scripts/protocol-gen-swift.ts",
     "proxy:coverage": "node scripts/run-node.mjs proxy coverage",
     "proxy:gateway": "node scripts/run-node.mjs proxy run -- node scripts/run-node.mjs gateway",
@@ -1960,7 +1969,7 @@
     "test:unit:fast:audit": "node scripts/test-unit-fast-audit.mjs",
     "test:voicecall:closedloop": "node scripts/test-voicecall-closedloop.mjs",
     "test:watch": "node scripts/test-projects.mjs --watch",
-    "test:windows:ci": "node scripts/test-projects.mjs src/shared/runtime-import.test.ts src/process/exec.windows.test.ts src/process/windows-command.test.ts src/infra/backup-create.windows.test.ts src/infra/windows-install-roots.test.ts src/node-host/invoke-system-run-allowlist.test.ts src/daemon/schtasks.startup-fallback.test.ts extensions/lobster/src/lobster-runner.test.ts test/scripts/format-generated-module.test.ts test/scripts/npm-runner.test.ts test/scripts/openclaw-cross-os-release-workflow.test.ts test/scripts/pnpm-runner.test.ts test/scripts/run-with-env.test.ts test/scripts/ts-topology.test.ts test/scripts/ui.test.ts test/scripts/vitest-process-group.test.ts",
+    "test:windows:ci": "node scripts/test-projects.mjs src/shared/runtime-import.test.ts src/process/exec.windows.test.ts src/process/windows-command.test.ts src/infra/windows-install-roots.test.ts src/node-host/invoke-system-run-allowlist.test.ts src/daemon/schtasks.startup-fallback.test.ts extensions/lobster/src/lobster-runner.test.ts test/scripts/format-generated-module.test.ts test/scripts/npm-runner.test.ts test/scripts/openclaw-cross-os-release-workflow.test.ts test/scripts/pnpm-runner.test.ts test/scripts/run-with-env.test.ts test/scripts/ts-topology.test.ts test/scripts/ui.test.ts test/scripts/vitest-process-group.test.ts",
     "tool-display:check": "node --import tsx scripts/tool-display.ts --check",
     "tool-display:write": "node --import tsx scripts/tool-display.ts --write",
     "ts-topology": "node --import tsx scripts/ts-topology.ts",
@@ -1988,7 +1997,7 @@
     "tui:pty:test:watch:all": "node --import tsx scripts/dev/tui-pty-test-watch.ts --mode all",
     "tui:pty:test:watch:fake": "node --import tsx scripts/dev/tui-pty-test-watch.ts --mode fake",
     "tui:pty:test:watch:local": "node --import tsx scripts/dev/tui-pty-test-watch.ts --mode local",
-    "ui:build": "node scripts/ui.js build && node scripts/check-control-ui-precompressed-assets.mjs",
+    "ui:build": "node scripts/ui.js build && node scripts/check-control-ui-precompressed-assets.mjs && node scripts/check-control-ui-performance.mjs",
     "ui:dev": "node scripts/ui.js dev",
     "ui:i18n:check": "node --import tsx scripts/control-ui-i18n.ts check",
     "ui:i18n:report": "node --import tsx scripts/control-ui-i18n-report.ts",
@@ -2023,13 +2032,12 @@
     "clawpdf": "0.3.0",
     "commander": "15.0.0",
     "croner": "10.0.1",
-    "defu": "6.1.5",
     "diff": "9.0.0",
     "dotenv": "17.4.2",
     "entities": "8.0.0",
+    "execa": "9.6.1",
     "express": "5.2.1",
     "file-type": "22.0.1",
-    "glob": "13.0.6",
     "grammy": "1.44.0",
     "highlight.js": "11.11.1",
     "hosted-git-info": "10.1.1",
@@ -2044,6 +2052,8 @@
     "node-edge-tts": "1.2.10",
     "openai": "6.45.0",
     "partial-json": "0.1.7",
+    "p-limit": "7.3.0",
+    "p-map": "7.0.5",
     "playwright-core": "1.61.1",
     "pretty-ms": "9.3.0",
     "proper-lockfile": "4.1.2",

@@ -21,6 +21,11 @@ import type { CommandQueueEnqueueFn } from "../../../process/command-queue.types
 import type { InputProvenance } from "../../../sessions/input-provenance.js";
 import type { UserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.types.js";
 import type { SkillSnapshot } from "../../../skills/types.js";
+import type {
+  SkillProposalOrigin,
+  SkillWorkshopProposalMutationBudget,
+  SkillWorkshopRunOptions,
+} from "../../../skills/workshop/types.js";
 import type { ExecElevatedDefaults, ExecToolDefaults } from "../../bash-tools.exec-types.js";
 import type { BootstrapContextRunKind } from "../../bootstrap-mode.js";
 import type { AgentStreamParams, ClientToolDefinition } from "../../command/shared-types.js";
@@ -137,6 +142,16 @@ export type RunEmbeddedAgentParams = {
   modelRun?: boolean;
   /** Disable trajectory persistence for auxiliary runs with no durable session owner. */
   disableTrajectory?: boolean;
+  /** Restrict Skill Workshop to a bounded pending-proposal budget for an internal review run. */
+  skillWorkshopProposalOnly?: boolean;
+  /** Preserve the foreground run as proposal provenance for an internal review run. */
+  skillWorkshopOrigin?: SkillProposalOrigin;
+  /** Run-scoped mutation budget shared across internal runner attempts. */
+  skillWorkshopProposalMutationBudget?: SkillWorkshopProposalMutationBudget;
+  /** Optional state environment for isolated Skill Workshop proposal persistence. */
+  skillWorkshopProposalEnv?: NodeJS.ProcessEnv;
+  /** Shared completion latch for proposal-only review runs that checkpoint their batch. */
+  skillWorkshopProposalReviewCompletion?: SkillWorkshopRunOptions["proposalReviewCompletion"];
   /** Explicit system prompt mode override for trusted callers. */
   promptMode?: PromptMode;
   /** Keep the message tool available even when a narrow profile would omit it. */

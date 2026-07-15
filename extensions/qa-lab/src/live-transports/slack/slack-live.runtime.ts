@@ -374,7 +374,7 @@ type SlackQaScenarioResult = {
   title: string;
 };
 
-export type SlackQaRunResult = {
+type SlackQaRunResult = {
   gatewayDebugDirPath?: string;
   observedMessagesPath: string;
   outputDir: string;
@@ -3743,7 +3743,7 @@ export async function runSlackQaLive(params: {
   };
 }
 
-export const testing = {
+const testing = {
   assertSlackCodexApprovalModelSupported,
   assertCodexApprovalTranscriptSucceeded,
   buildCodexApprovalInstruction,

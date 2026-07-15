@@ -15,13 +15,13 @@ import {
 } from "./sdk-alias.js";
 
 /** Jiti-based module loader used for plugin source/runtime imports. */
-export type PluginModuleLoader = ReturnType<typeof createJiti>;
+type PluginModuleLoader = ReturnType<typeof createJiti>;
 export type PluginModuleLoaderFactory = typeof createJiti;
 export type PluginModuleLoaderCache = Pick<
   PluginLruCache<PluginModuleLoader>,
   "clear" | "get" | "set" | "size"
 >;
-export type ResolvePluginModuleLoaderCacheEntryParams = {
+type ResolvePluginModuleLoaderCacheEntryParams = {
   modulePath: string;
   importerUrl: string;
   argvEntry?: string;
@@ -33,15 +33,17 @@ export type ResolvePluginModuleLoaderCacheEntryParams = {
   pluginSdkResolution?: PluginSdkResolutionPreference;
   cacheScopeKey?: string;
   sharedCacheScopeKey?: string;
+  transformOpenClawDependencies?: boolean;
 };
-export type PluginModuleLoaderCacheEntry = {
+type PluginModuleLoaderCacheEntry = {
   loaderFilename: string;
   aliasMap: Record<string, string>;
   tryNative: boolean;
+  transformOpenClawDependencies: boolean;
   cacheKey: string;
   scopedCacheKey: string;
 };
-export type PluginModuleLoaderStatsSnapshot = {
+type PluginModuleLoaderStatsSnapshot = {
   calls: number;
   nativeHits: number;
   nativeMisses: number;
@@ -135,7 +137,7 @@ function resolveDefaultPluginModuleLoaderConfig(
   });
 }
 
-export function resolvePluginModuleLoaderCacheEntry(
+function resolvePluginModuleLoaderCacheEntry(
   params: ResolvePluginModuleLoaderCacheEntryParams,
 ): PluginModuleLoaderCacheEntry {
   const loaderFilename = toSafeImportPath(params.loaderFilename ?? params.modulePath);
@@ -157,12 +159,14 @@ export function resolvePluginModuleLoaderCacheEntry(
       }
     : resolveDefaultPluginModuleLoaderConfig(params);
   const { tryNative, aliasMap } = resolved;
-  const cacheKey =
+  const moduleConfigCacheKey =
     resolved.cacheKey ??
     createPluginLoaderModuleCacheKey({
       tryNative,
       aliasMap,
     });
+  const transformOpenClawDependencies = params.transformOpenClawDependencies ?? tryNative;
+  const cacheKey = `${moduleConfigCacheKey}\0transform-openclaw=${transformOpenClawDependencies ? "1" : "0"}`;
   const scopedCacheKey = `${loaderFilename}::${
     params.sharedCacheScopeKey ??
     (params.cacheScopeKey ? `${params.cacheScopeKey}::${cacheKey}` : cacheKey)
@@ -171,6 +175,7 @@ export function resolvePluginModuleLoaderCacheEntry(
     loaderFilename,
     aliasMap,
     tryNative,
+    transformOpenClawDependencies,
     cacheKey,
     scopedCacheKey,
   };
@@ -220,13 +225,13 @@ function createPluginModuleLoader(params: {
   loaderFilename: string;
   aliasMap: Record<string, string>;
   tryNative: boolean;
+  transformOpenClawDependencies: boolean;
   createLoader?: PluginModuleLoaderFactory;
 }): PluginModuleLoader {
   // A declined native require can leave an ESM dependency in flight. The
   // fallback must transform both the entry and OpenClaw SDK dependencies.
   const getLoadWithSourceTransform = createLazySourceTransformLoader({
     ...params,
-    transformOpenClawDependencies: params.tryNative,
   });
   const loadedTargetExports = new Map<string, unknown>();
   const loadCachedTarget = (target: string, rest: unknown[], load: () => unknown): unknown => {
@@ -304,6 +309,7 @@ export function getCachedPluginModuleLoader(
     loaderFilename: cacheEntry.loaderFilename,
     aliasMap: cacheEntry.aliasMap,
     tryNative: cacheEntry.tryNative,
+    transformOpenClawDependencies: cacheEntry.transformOpenClawDependencies,
     ...(params.createLoader ? { createLoader: params.createLoader } : {}),
   });
   params.cache.set(cacheEntry.scopedCacheKey, loader);

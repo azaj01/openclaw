@@ -173,7 +173,8 @@ function Test-NodeVersionSupported {
 
 function Test-NodeSqliteSupported {
     try {
-        & node -e 'const { DatabaseSync } = require("node:sqlite"); const db = new DatabaseSync(":memory:"); try { const value = db.prepare("SELECT sqlite_version() AS version").get()?.version; const match = typeof value === "string" ? /^(\d+)\.(\d+)\.(\d+)$/.exec(value) : null; const major = Number(match?.[1]); const minor = Number(match?.[2]); const patch = Number(match?.[3]); const safe = major > 3 || (major === 3 && (minor > 51 || (minor === 51 && patch >= 3) || (minor === 50 && patch >= 7) || (minor === 44 && patch >= 6))); if (!safe) process.exitCode = 1; } finally { db.close(); }' 2>$null
+        $probe = 'const { DatabaseSync } = require("node:sqlite"); const db = new DatabaseSync(":memory:"); try { const value = db.prepare("SELECT sqlite_version() AS version").get()?.version; const match = typeof value === "string" ? /^(\d+)\.(\d+)\.(\d+)$/.exec(value) : null; const major = Number(match?.[1]); const minor = Number(match?.[2]); const patch = Number(match?.[3]); const safe = major > 3 || (major === 3 && (minor > 51 || (minor === 51 && patch >= 3) || (minor === 50 && patch >= 7) || (minor === 44 && patch >= 6))); if (!safe) process.exitCode = 1; } finally { db.close(); }'
+        $probe | & node - 2>$null
         return ($LASTEXITCODE -eq 0)
     } catch {
         return $false
@@ -391,6 +392,7 @@ function Install-Node {
 
         # Refresh PATH
         Refresh-ProcessPath
+        Add-InstalledNodeToProcessPath | Out-Null
         if (Check-Node) {
             Write-Host "[OK] Node.js installed via winget" -ForegroundColor Green
             return $true
@@ -486,6 +488,20 @@ function Add-ToProcessPath {
     }
 
     $env:Path = "$PathEntry;$env:Path"
+}
+
+function Add-InstalledNodeToProcessPath {
+    foreach ($programFilesRoot in @($env:ProgramW6432, $env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if ([string]::IsNullOrWhiteSpace($programFilesRoot)) {
+            continue
+        }
+        $nodeDir = Join-Path $programFilesRoot "nodejs"
+        if (Test-Path (Join-Path $nodeDir "node.exe")) {
+            Add-ToProcessPath $nodeDir
+            return $true
+        }
+    }
+    return $false
 }
 
 function Refresh-ProcessPath {

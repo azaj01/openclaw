@@ -1458,8 +1458,6 @@ export async function loadCostUsageSummary(params?: {
   startMs?: number;
   endMs?: number;
   dayBucket?: UsageDailyBucket;
-  /** @deprecated Use startMs/endMs. */
-  days?: number;
   config?: OpenClawConfig;
   agentId?: string;
 }): Promise<CostUsageSummary> {
@@ -1471,8 +1469,7 @@ export async function loadCostUsageSummary(params?: {
     sinceTime = params.startMs;
     untilTime = params.endMs;
   } else {
-    // Fallback to days-based calculation for backwards compatibility
-    const days = Math.max(1, Math.floor(params?.days ?? 30));
+    const days = 30;
     const since = new Date(now);
     since.setDate(since.getDate() - (days - 1));
     sinceTime = since.getTime();
@@ -1774,7 +1771,7 @@ async function refreshCostUsageCacheForAgent(params?: {
   }
 }
 
-export async function refreshCostUsageCache(params?: {
+async function refreshCostUsageCache(params?: {
   config?: OpenClawConfig;
   agentId?: string;
   maxFiles?: number;
@@ -1837,122 +1834,6 @@ export async function loadCostUsageSummaryFromCache(params: {
     dayBucket: params.dayBucket,
     refreshing: usageCostRefreshes.has(refreshKey) || refreshRunning,
   });
-}
-
-export async function loadSessionCostSummaryFromCache(params: {
-  sessionId?: string;
-  sessionEntry?: SessionEntry;
-  sessionFile: string;
-  config?: OpenClawConfig;
-  agentId?: string;
-  startMs?: number;
-  endMs?: number;
-  dayBucket?: UsageDailyBucket;
-  requestRefresh?: boolean;
-  refreshMode?: "background" | "sync-when-empty";
-}): Promise<{ summary: SessionCostSummary | null; cacheStatus: UsageCacheStatus }> {
-  const databasePath = resolveUsageCostCacheDatabasePath(params.agentId);
-  const refreshKey = databasePath;
-  const pricingFingerprint = resolveUsageCostPricingFingerprint(params.config);
-  let cache = readUsageCostCache(params.agentId, pricingFingerprint, databasePath);
-  let file = await resolveUsageCostTranscriptFile(params.sessionFile);
-  let entry = cache.files[params.sessionFile];
-  let stale =
-    !file ||
-    !isUsageCostCacheEntryFresh({
-      entry,
-      file,
-      requireSessionSummary: true,
-    });
-  let refreshRequested = false;
-  if (params.requestRefresh !== false && stale) {
-    if (params.refreshMode === "sync-when-empty") {
-      const result = await refreshCostUsageCache({
-        config: params.config,
-        agentId: params.agentId,
-        sessionFiles: [params.sessionFile],
-      });
-      if (result === "refreshed") {
-        cache = readUsageCostCache(params.agentId, pricingFingerprint, databasePath);
-        file = await resolveUsageCostTranscriptFile(params.sessionFile);
-        entry = cache.files[params.sessionFile];
-        stale =
-          !file ||
-          !isUsageCostCacheEntryFresh({
-            entry,
-            file,
-            requireSessionSummary: true,
-          });
-      } else {
-        requestCostUsageCacheRefresh({
-          config: params.config,
-          agentId: params.agentId,
-          sessionFiles: [params.sessionFile],
-        });
-        refreshRequested = true;
-      }
-    } else {
-      requestCostUsageCacheRefresh({
-        config: params.config,
-        agentId: params.agentId,
-        sessionFiles: [params.sessionFile],
-      });
-      refreshRequested = true;
-    }
-  }
-  const refreshRunning =
-    usageCostRefreshes.has(refreshKey) ||
-    isSessionCostUsageRefreshRunning(params.agentId, databasePath);
-  let summary = stale ? null : (entry?.sessionSummary ?? null);
-  // Persisted summaries use Gateway-local day keys. Explicit request calendars
-  // must rebuild daily projections from the cached transcript entries.
-  const requiresDailyRebucket = params.dayBucket !== undefined;
-  if (
-    summary &&
-    params.startMs !== undefined &&
-    params.endMs !== undefined &&
-    (requiresDailyRebucket ||
-      !isSessionSummaryContainedInRange(summary, params.startMs, params.endMs))
-  ) {
-    summary = entry
-      ? buildSessionCostSummaryFromCacheEntry({
-          entry,
-          sessionId: params.sessionId,
-          sessionFile: params.sessionFile,
-          startMs: params.startMs,
-          endMs: params.endMs,
-          formatDayKey: createUsageDayKeyFormatter(params.dayBucket),
-        })
-      : null;
-  }
-  if (!summary && params.refreshMode === "sync-when-empty") {
-    summary = await loadSessionCostSummary({
-      sessionId: params.sessionId,
-      sessionEntry: params.sessionEntry,
-      sessionFile: params.sessionFile,
-      config: params.config,
-      agentId: params.agentId,
-      startMs: params.startMs,
-      endMs: params.endMs,
-      dayBucket: params.dayBucket,
-    });
-  }
-  return {
-    summary,
-    cacheStatus: {
-      status: stale
-        ? refreshRunning || refreshRequested
-          ? "refreshing"
-          : summary
-            ? "partial"
-            : "stale"
-        : "fresh",
-      cachedFiles: stale ? 0 : 1,
-      pendingFiles: stale ? 1 : 0,
-      staleFiles: stale ? 1 : 0,
-      refreshedAt: cache.updatedAt || undefined,
-    },
-  };
 }
 
 export async function loadSessionCostSummariesFromCache(params: {
@@ -2048,7 +1929,7 @@ export async function loadSessionCostSummariesFromCache(params: {
   };
 }
 
-export function requestCostUsageCacheRefresh(params?: {
+function requestCostUsageCacheRefresh(params?: {
   config?: OpenClawConfig;
   agentId?: string;
   sessionFiles?: string[];
