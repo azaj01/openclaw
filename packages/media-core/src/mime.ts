@@ -1,4 +1,3 @@
-// Media Core module implements mime behavior.
 import path from "node:path";
 import { type MediaKind, mediaKindFromMime } from "./constants.js";
 import { extnameFromAnyPath } from "./file-name.js";
@@ -8,8 +7,11 @@ export const FILE_TYPE_SNIFF_MAX_BYTES = 1024 * 1024;
 
 // Map common mimes to preferred file extensions.
 const EXT_BY_MIME: Record<string, string> = {
+  "image/avif": ".avif",
   "image/heic": ".heic",
+  "image/heic-sequence": ".heic",
   "image/heif": ".heif",
+  "image/heif-sequence": ".heif",
   "image/bmp": ".bmp",
   "image/jpg": ".jpg",
   "image/jpeg": ".jpg",
@@ -17,6 +19,8 @@ const EXT_BY_MIME: Record<string, string> = {
   "image/svg+xml": ".svg",
   "image/webp": ".webp",
   "image/gif": ".gif",
+  "audio/aiff": ".aiff",
+  "audio/x-aiff": ".aiff",
   "audio/ogg": ".ogg",
   "audio/mpeg": ".mp3",
   "audio/mp3": ".mp3",
@@ -25,12 +29,15 @@ const EXT_BY_MIME: Record<string, string> = {
   "audio/x-wav": ".wav",
   "audio/flac": ".flac",
   "audio/aac": ".aac",
+  "audio/amr": ".amr",
   "audio/opus": ".opus",
   "audio/webm": ".webm",
   "audio/x-m4a": ".m4a",
+  "audio/m4a": ".m4a",
   "audio/mp4": ".m4a",
   "audio/x-caf": ".caf",
   "video/x-msvideo": ".avi",
+  "video/x-m4v": ".m4v",
   "video/mp4": ".mp4",
   "video/x-matroska": ".mkv",
   "video/webm": ".webm",
@@ -73,29 +80,104 @@ const MIME_BY_EXT: Record<string, string> = {
   // Canonical extension mappings for common MIME aliases
   ".jpg": "image/jpeg",
   ".m2a": "audio/mpeg",
+  ".m4b": "audio/mp4",
   ".mp3": "audio/mpeg",
   ".oga": "audio/ogg",
   ".wav": "audio/wav",
   ".webm": "video/webm",
   // Additional extension aliases
+  ".aif": "audio/aiff",
+  ".aifc": "audio/aiff",
   ".jpeg": "image/jpeg",
+  ".cfg": "text/plain",
+  ".conf": "text/plain",
+  ".env": "text/plain",
+  ".ini": "text/plain",
   ".js": "text/javascript",
   ".log": "text/plain",
   ".htm": "text/html",
+  ".tsv": "text/tab-separated-values",
   ".xml": "text/xml",
   ".yml": "application/yaml",
 };
 
-/** Normalizes MIME strings by dropping parameters, lowercasing, and folding APNG to PNG. */
+const AMBIGUOUS_VIDEO_MIME_BY_AUDIO_MIME: Readonly<Record<string, string>> = {
+  "audio/mp4": "video/mp4",
+  "audio/x-m4a": "video/mp4",
+  "audio/m4a": "video/mp4",
+  "audio/webm": "video/webm",
+};
+
+// file-type can return generic ZIP when package metadata is outside its sniff window.
+// Only ZIP-backed MIME families may refine that result; arbitrary headers cannot.
+const ZIP_CONTAINER_MIMES = new Set([
+  "application/java-archive",
+  "application/vnd.android.package-archive",
+  "application/vnd.apple.keynote",
+  "application/vnd.apple.numbers",
+  "application/vnd.apple.pages",
+  "application/vnd.google-earth.kmz",
+  "application/vnd.ms-excel.sheet.macroenabled.12",
+  "application/vnd.ms-excel.template.macroenabled.12",
+  "application/vnd.ms-powerpoint.presentation.macroenabled.12",
+  "application/vnd.ms-powerpoint.slideshow.macroenabled.12",
+  "application/vnd.ms-powerpoint.template.macroenabled.12",
+  "application/vnd.ms-visio.drawing",
+  "application/vnd.ms-visio.drawing.macroenabled.12",
+  "application/vnd.ms-visio.stencil",
+  "application/vnd.ms-visio.stencil.macroenabled.12",
+  "application/vnd.ms-visio.template",
+  "application/vnd.ms-visio.template.macroenabled.12",
+  "application/vnd.ms-word.document.macroenabled.12",
+  "application/vnd.ms-word.template.macroenabled.12",
+  "application/vnd.oasis.opendocument.graphics",
+  "application/vnd.oasis.opendocument.graphics-template",
+  "application/vnd.oasis.opendocument.presentation",
+  "application/vnd.oasis.opendocument.presentation-template",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/vnd.oasis.opendocument.spreadsheet-template",
+  "application/vnd.oasis.opendocument.text",
+  "application/vnd.oasis.opendocument.text-template",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+  "application/vnd.openxmlformats-officedocument.presentationml.template",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+  "application/x-xpinstall",
+  "model/3mf",
+]);
+
+export function isZipContainerMime(mime: string): boolean {
+  return mime.endsWith("+zip") || ZIP_CONTAINER_MIMES.has(mime);
+}
+
+// Registered/legacy synonym pairs fold to one canonical spelling so configured
+// allowlists and byte classification always compare the same value; without
+// this an operator's existing text/yaml allowlist stops matching .yaml files.
+const MIME_SYNONYMS: Record<string, string> = {
+  "image/apng": "image/png",
+  "text/yaml": "application/yaml",
+  "application/x-yaml": "application/yaml",
+  "application/xml": "text/xml",
+  // Preserve shipped filename/header spellings for byte-detected container aliases.
+  "video/vnd.avi": "video/x-msvideo",
+  "video/matroska": "video/x-matroska",
+};
+
+/** Normalizes MIME strings by dropping parameters, lowercasing, and folding registered synonyms. */
 export function normalizeMimeType(mime?: string | null): string | undefined {
   if (!mime) {
     return undefined;
   }
   const cleaned = mime.split(";")[0]?.trim().toLowerCase();
-  if (cleaned === "image/apng") {
-    return "image/png";
+  if (!cleaned) {
+    return undefined;
   }
-  return cleaned || undefined;
+  // Object.hasOwn: a remote "__proto__"/"constructor" header would otherwise
+  // resolve to inherited Object.prototype members and break the string contract.
+  return Object.hasOwn(MIME_SYNONYMS, cleaned) ? MIME_SYNONYMS[cleaned] : cleaned;
 }
 
 /** Returns the bounded buffer prefix used for dependency MIME sniffing. */
@@ -163,60 +245,45 @@ export function isAudioFileName(fileName?: string | null): boolean {
 }
 
 /** Detects the best MIME type from bytes, file path, and header metadata. */
-export function detectMime(opts: {
+export async function detectMime(opts: {
   buffer?: Buffer;
   headerMime?: string | null;
+  additionalMimeHints?: readonly (string | null | undefined)[];
   filePath?: string;
 }): Promise<string | undefined> {
-  return detectMimeImpl(opts);
-}
-
-function isGenericMime(mime?: string): boolean {
-  if (!mime) {
-    return true;
-  }
-  const m = mime.toLowerCase();
-  return m === "application/octet-stream" || m === "application/zip";
-}
-
-function isImageMime(mime?: string): boolean {
-  return mediaKindFromMime(normalizeMimeType(mime)) === "image";
-}
-
-async function detectMimeImpl(opts: {
-  buffer?: Buffer;
-  headerMime?: string | null;
-  filePath?: string;
-}): Promise<string | undefined> {
-  const ext = getFileExtension(opts.filePath);
-  const extMime = ext ? MIME_BY_EXT[ext] : undefined;
-
-  const headerMime = normalizeMimeType(opts.headerMime);
+  const extMime = MIME_BY_EXT[getFileExtension(opts.filePath) ?? ""];
+  const mimeHints = [opts.headerMime, ...(opts.additionalMimeHints ?? [])]
+    .map((mime) => normalizeMimeType(mime))
+    .filter((mime): mime is string => Boolean(mime));
+  const headerMime = mimeHints[0];
   const sniffed = await sniffMime(opts.buffer);
-  const sniffedGenericContainer = sniffed && isGenericMime(sniffed);
-  const trustedExtMime = sniffedGenericContainer && isImageMime(extMime) ? undefined : extMime;
-  const trustedHeaderMime =
-    sniffedGenericContainer && isImageMime(headerMime) ? undefined : headerMime;
+  const sniffedGenericContainer =
+    sniffed === "application/octet-stream" || sniffed === "application/zip";
 
   // Prefer sniffed types, but don't let generic container types override a more
-  // specific extension mapping (e.g. XLSX vs ZIP).
-  if (sniffed && (!isGenericMime(sniffed) || !trustedExtMime)) {
-    return sniffed;
+  // specific extension or known container metadata (e.g. XLSX vs ZIP).
+  const specificExtMime =
+    extMime && extMime !== sniffed && !extMime.startsWith("image/") ? extMime : undefined;
+  const genericContainerMime =
+    sniffed === "application/zip"
+      ? [extMime, ...mimeHints].find((mime) => mime && isZipContainerMime(mime))
+      : sniffed === "application/octet-stream"
+        ? (specificExtMime ?? mimeHints.find((mime) => mime !== "application/octet-stream"))
+        : undefined;
+  const inferred = sniffedGenericContainer
+    ? (genericContainerMime ?? sniffed)
+    : (sniffed ?? extMime);
+  // file-type defaults these containers to video without parsing their tracks.
+  // Preserve a concrete audio hint only for those documented ambiguous results.
+  const audioContainerHint =
+    inferred &&
+    [...mimeHints, extMime].find(
+      (mime) => mime && AMBIGUOUS_VIDEO_MIME_BY_AUDIO_MIME[mime] === inferred,
+    );
+  if (audioContainerHint) {
+    return audioContainerHint;
   }
-  if (trustedExtMime) {
-    return trustedExtMime;
-  }
-  if (trustedHeaderMime && !isGenericMime(trustedHeaderMime)) {
-    return trustedHeaderMime;
-  }
-  if (sniffed) {
-    return sniffed;
-  }
-  if (trustedHeaderMime) {
-    return trustedHeaderMime;
-  }
-
-  return undefined;
+  return inferred ?? headerMime;
 }
 
 /** Returns the preferred file extension for a normalized or raw MIME string. */
@@ -225,7 +292,9 @@ export function extensionForMime(mime?: string | null): string | undefined {
   if (!normalized) {
     return undefined;
   }
-  return EXT_BY_MIME[normalized];
+  // Same prototype-key hazard as normalizeMimeType: a "__proto__" lookup would
+  // return Object.prototype where callers expect string | undefined.
+  return Object.hasOwn(EXT_BY_MIME, normalized) ? EXT_BY_MIME[normalized] : undefined;
 }
 
 /** Returns true when content type or filename identifies GIF media. */
@@ -246,6 +315,8 @@ export function imageMimeFromFormat(format?: string | null): string | undefined 
     return undefined;
   }
   switch (format.toLowerCase()) {
+    case "avif":
+      return "image/avif";
     case "jpg":
     case "jpeg":
       return "image/jpeg";

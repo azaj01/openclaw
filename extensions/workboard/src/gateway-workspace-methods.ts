@@ -1,14 +1,15 @@
+import type { WorkboardCard } from "@openclaw/workboard-contract";
 // Workboard Gateway methods that can persist workspace-bearing card metadata.
 import type { OpenClawPluginApi } from "../api.js";
 import {
   readId,
+  readExpectedUpdatedAt,
   readPatch,
   resolveGatewayWorkboardWorkspaceAccess,
   respondError,
   type GatewayMethodContext,
 } from "./gateway-helpers.js";
 import type { WorkboardStore } from "./store.js";
-import type { WorkboardCard } from "./types.js";
 import {
   assertWorkboardWorkspaceMutationAccess,
   canonicalizeWorkboardWorkspaceAccess,
@@ -61,12 +62,30 @@ export function registerWorkboardWorkspaceCardMethods(params: WorkspaceGatewayMe
   );
 
   api.registerGatewayMethod(
+    "workboard.cards.captureSession",
+    async (request) => {
+      const { params: requestParams, respond } = request;
+      try {
+        const input = withoutWorkboardWorkspaceAccess(requestParams);
+        const access = await resolveGatewayWorkspaceMutationAccess(request, input);
+        respond(true, {
+          card: redactCard(await store.captureSession(withWorkboardWorkspaceAccess(input, access))),
+        });
+      } catch (error) {
+        respondError(respond, error);
+      }
+    },
+    { scope: WRITE_SCOPE },
+  );
+
+  api.registerGatewayMethod(
     "workboard.cards.update",
     async (request) => {
       const { params: requestParams, respond } = request;
       try {
         const patch = withoutWorkboardWorkspaceAccess(readPatch(requestParams));
         const access = await resolveGatewayWorkspaceMutationAccess(request, patch);
+        const expectedUpdatedAt = readExpectedUpdatedAt(requestParams);
         respond(true, {
           card: redactCard(
             await store.update(
@@ -74,6 +93,7 @@ export function registerWorkboardWorkspaceCardMethods(params: WorkspaceGatewayMe
               containsWorkboardWorkspaceMutation(patch)
                 ? withWorkboardWorkspaceAccess(patch, access)
                 : patch,
+              { expectedUpdatedAt },
             ),
           ),
         });

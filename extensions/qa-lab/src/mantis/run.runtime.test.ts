@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { QA_EVIDENCE_FILENAME, buildLiveTransportEvidenceSummary } from "../evidence-summary.js";
+import { createQaEvidenceInvocation } from "../evidence-invocation.js";
+import { QA_EVIDENCE_FILENAME, buildQaSuiteEvidenceSummary } from "../evidence-summary.js";
 import { runMantisBeforeAfter } from "./run.runtime.js";
 
 function requireArgAfter(args: readonly string[], flag: string): string {
@@ -42,27 +43,35 @@ describe("mantis before/after runtime", () => {
       const videoPath = path.join(outputDir, `${lane}-timeline.mp4`);
       await fs.writeFile(screenshotPath, `${lane} screenshot`);
       await fs.writeFile(videoPath, `${lane} video`);
-      const summary = buildLiveTransportEvidenceSummary({
+      const title = "Discord explicit status reactions run in tool-only reply mode";
+      const summary = buildQaSuiteEvidenceSummary({
         artifactPaths: [
           { kind: "summary", path: QA_EVIDENCE_FILENAME },
           { kind: "report", path: "discord-qa-report.md" },
+          { kind: "screenshot", path: screenshotPath },
+          { kind: "video", path: videoPath },
         ],
-        checks: [
+        channelDriver: "live",
+        channelId: "discord",
+        scenarioDefinitions: [
           {
-            artifactPaths: { screenshot: screenshotPath, video: videoPath },
-            details:
-              lane === "baseline"
-                ? "reaction timeline missing thinking/done"
-                : "reaction timeline matched queued -> thinking -> done",
             id: "discord-status-reactions-tool-only",
-            status: lane === "baseline" ? "fail" : "pass",
-            title: "Discord explicit status reactions run in tool-only reply mode",
+            title,
           },
         ],
         generatedAt: "2026-05-03T12:00:00.000Z",
         primaryModel: "openai/gpt-5.4",
         providerMode: "live-frontier",
-        transportId: "discord",
+        scenarioResults: [
+          {
+            details:
+              lane === "baseline"
+                ? "reaction timeline missing thinking/done"
+                : "reaction timeline matched queued -> thinking -> done",
+            name: title,
+            status: lane === "baseline" ? "fail" : "pass",
+          },
+        ],
       });
       await fs.writeFile(
         path.join(outputDir, QA_EVIDENCE_FILENAME),
@@ -213,4 +222,92 @@ describe("mantis before/after runtime", () => {
     );
     expect(candidateArtifact?.alt).toBe("Candidate Discord thread reply with filePath attachment");
   });
+
+  it.each(["unresolved first", "different first owner", "malformed existing file"])(
+    "does not promote a later pass or legacy fallback for %s",
+    async (caseName) => {
+      const scenarioId = "discord-status-reactions-tool-only";
+      const runner = async (command: string, args: readonly string[]) => {
+        if (command !== "pnpm" || !args.includes("openclaw")) {
+          return;
+        }
+        const laneRoot = requireArgAfter(args, "--repo-root");
+        const outputArg = requireArgAfter(args, "--output-dir");
+        const outputDir = path.join(laneRoot, outputArg);
+        await fs.mkdir(outputDir, { recursive: true });
+        const invocation = createQaEvidenceInvocation({
+          scenarios: [
+            {
+              id: caseName === "different first owner" ? "another-scenario" : scenarioId,
+              execution: { kind: "script" },
+            },
+            { id: scenarioId, execution: { kind: "script" } },
+          ],
+          channel: "discord",
+          launch: {
+            source: { ref: null, integrity: null },
+            runtime: { id: null, version: null },
+            package: null,
+            protocol: null,
+            accountRef: null,
+            proofClass: null,
+          },
+        });
+        const first = invocation.begin(0);
+        const status = outputArg.endsWith("baseline") ? "fail" : "pass";
+        if (caseName !== "unresolved first" || status === "fail") {
+          invocation.complete(first, {
+            status,
+            entries: [
+              {
+                test: { kind: "script", id: scenarioId, title: "First" },
+                coverage: [],
+                result: { status },
+              },
+            ],
+          });
+          invocation.select(0, first);
+        }
+        const later = invocation.begin(1);
+        invocation.complete(later, {
+          status: "pass",
+          entries: [
+            {
+              test: { kind: "script", id: scenarioId, title: "Later" },
+              coverage: [],
+              result: { status: "pass" },
+            },
+          ],
+        });
+        invocation.select(1, later);
+        const evidence = invocation.snapshot({ generatedAt: "2026-09-13T00:00:00.000Z" });
+        if (caseName === "malformed existing file") {
+          evidence.entries[0]!.binding.occurrenceId = "absent";
+        }
+        await fs.writeFile(path.join(outputDir, QA_EVIDENCE_FILENAME), JSON.stringify(evidence));
+        await fs.writeFile(
+          path.join(outputDir, "discord-qa-summary.json"),
+          JSON.stringify({
+            scenarios: [{ id: scenarioId, status: "pass" }],
+          }),
+        );
+      };
+      const run = runMantisBeforeAfter({
+        commandRunner: runner,
+        repoRoot,
+        outputDir: ".artifacts/mantis-occurrences",
+        skipBuild: true,
+        skipInstall: true,
+      });
+      if (caseName === "malformed existing file") {
+        await expect(run).rejects.toThrow();
+      } else {
+        const result = await run;
+        expect(result.status).toBe("fail");
+        const comparison = JSON.parse(await fs.readFile(result.comparisonPath, "utf8"));
+        expect(comparison.candidate.status).toBe("unknown");
+        expect(comparison.candidate.fixed).toBe(false);
+      }
+    },
+  );
 });

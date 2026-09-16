@@ -4,7 +4,7 @@ import type {
   WorkerInferenceTerminalFrame,
   WorkerInferenceTerminalOutcome,
 } from "../../../packages/gateway-protocol/src/schema/worker-inference.js";
-import { createDeferred } from "../../shared/deferred.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import type { WorkerConnectionIdentity } from "./connection-identity.js";
 import type { WorkerInferenceStore } from "./inference-store.js";
 import {
@@ -12,6 +12,13 @@ import {
   type WorkerInferenceExecutor,
   type WorkerInferenceSink,
 } from "./inference.js";
+
+function waitForFast<T>(
+  callback: () => T | Promise<T>,
+  options: { timeout?: number; interval?: number } = {},
+) {
+  return vi.waitFor(callback, { interval: 1, ...options });
+}
 
 const REQUEST: WorkerInferenceStartParams = {
   runEpoch: 3,
@@ -28,6 +35,13 @@ const IDENTITY: WorkerConnectionIdentity = {
   bundleHash: "b",
   sessionId: REQUEST.sessionId,
   runId: REQUEST.runId,
+  turnClaim: {
+    sessionId: REQUEST.sessionId,
+    claimId: "claim-r",
+    runId: REQUEST.runId,
+    placementGeneration: 4,
+    owner: { kind: "worker", environmentId: "w", ownerEpoch: REQUEST.runEpoch },
+  },
   ownerEpoch: REQUEST.runEpoch,
   rpcSetVersion: 1,
   protocolFeatures: ["worker-inference-v1"],
@@ -64,6 +78,20 @@ const CANCEL = {
   runId: REQUEST.runId,
   turnId: REQUEST.turnId,
 };
+
+function identityFor(request: WorkerInferenceStartParams): WorkerConnectionIdentity {
+  return {
+    ...IDENTITY,
+    sessionId: request.sessionId,
+    runId: request.runId,
+    turnClaim: {
+      ...IDENTITY.turnClaim!,
+      sessionId: request.sessionId,
+      runId: request.runId,
+      claimId: `claim-${request.runId}`,
+    },
+  };
+}
 
 type Manager = ReturnType<typeof createWorkerInferenceManager>;
 type StartOverrides = {
@@ -111,7 +139,7 @@ function accept(manager: Manager, overrides: StartOverrides = {}, launch = true)
 }
 
 function makeManager(execute: WorkerInferenceExecutor, store = createMemoryStore()) {
-  return createWorkerInferenceManager({ execute, store, now: () => 0 });
+  return createWorkerInferenceManager({ execute, store });
 }
 
 describe("worker inference manager", () => {
@@ -132,10 +160,11 @@ describe("worker inference manager", () => {
     });
     const sink = createSink();
     accept(instance, { sink: sink.sink });
+    const competing = { ...REQUEST, runId: "run-b", turnId: "turn-b" };
     expect(
       instance.start({
-        identity: IDENTITY,
-        request: { ...REQUEST, runId: "run-b", turnId: "turn-b" },
+        identity: identityFor(competing),
+        request: competing,
         sink: createSink().sink,
       }),
     ).toEqual({ ok: false, reason: "invalid-context" });
@@ -163,7 +192,7 @@ describe("worker inference manager", () => {
     }, store);
     const sink = createSink();
     accept(instance, { sink: sink.sink });
-    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    await waitForFast(() => expect(signals).toHaveLength(1));
     for (let index = 0; index < 2; index += 1) {
       expect(instance.cancel({ identity: IDENTITY, request: CANCEL })).toEqual({
         ok: true,
@@ -171,10 +200,60 @@ describe("worker inference manager", () => {
       });
     }
     expect(signals[0]?.aborted).toBe(true);
-    accept(instance, { request: { ...REQUEST, runId: "new-run", turnId: "new-turn" } });
-    await vi.waitFor(() => expect(signals).toHaveLength(2));
+    const nextRequest = { ...REQUEST, runId: "new-run", turnId: "new-turn" };
+    accept(instance, { identity: identityFor(nextRequest), request: nextRequest });
+    await waitForFast(() => expect(signals).toHaveLength(2));
     expect(instance.cancelSession(REQUEST.sessionId, "new-run")).toEqual(["new-run"]);
     expect(signals[1]?.aborted).toBe(true);
+    await instance.stop();
+  });
+
+  it("blocks replacement inference until an exact session drain settles", async () => {
+    const pending = createDeferred<WorkerInferenceTerminalOutcome>();
+    const execute = vi.fn<WorkerInferenceExecutor>(async () => await pending.promise);
+    const instance = makeManager(execute);
+    accept(instance);
+    await waitForFast(() => expect(execute).toHaveBeenCalledOnce());
+
+    const drain = instance.beginSessionDrain(REQUEST.sessionId);
+    expect(drain.hasWork()).toBe(true);
+    const replacementRequest = { ...REQUEST, runId: "replacement", turnId: "replacement" };
+    const replacementIdentity = identityFor(replacementRequest);
+    expect(
+      instance.start({
+        identity: replacementIdentity,
+        request: replacementRequest,
+        sink: createSink().sink,
+      }),
+    ).toEqual({ ok: false, reason: "cancelled" });
+
+    pending.resolve(ERROR);
+    await drain.drained;
+    expect(drain.hasWork()).toBe(false);
+    drain.release();
+    expect(
+      instance.start({
+        identity: replacementIdentity,
+        request: replacementRequest,
+        sink: createSink().sink,
+      }),
+    ).toMatchObject({ ok: true });
+    await instance.stop();
+  });
+
+  it("rejects an inference drain when terminal persistence fails", async () => {
+    const store = createMemoryStore();
+    vi.spyOn(store, "complete").mockImplementation(() => {
+      throw new Error("write failed");
+    });
+    const pending = createDeferred<WorkerInferenceTerminalOutcome>();
+    const instance = makeManager(async () => await pending.promise, store);
+    accept(instance);
+
+    const drain = instance.beginSessionDrain(REQUEST.sessionId);
+    pending.resolve(ERROR);
+    await expect(drain.drained).rejects.toThrow("terminal persistence failed");
+    drain.release();
     await instance.stop();
   });
 
@@ -196,18 +275,18 @@ describe("worker inference manager", () => {
         return pending.promise;
       },
       store,
-      now: () => 0,
       streamMaxBytes: 2_048,
     });
     const sink = createSink();
     accept(instance, { sink: sink.sink });
-    await vi.waitFor(() => expect(signal?.aborted).toBe(true));
-    await vi.waitFor(() =>
+    await waitForFast(() => expect(signal?.aborted).toBe(true));
+    await waitForFast(() =>
       expect(terminalFrames(sink.frames)[0]?.payload.outcome).toMatchObject({
         reason: "provider-error",
       }),
     );
-    accept(instance, { request: { ...REQUEST, runId: "retry-run", turnId: "retry-turn" } });
+    const retryRequest = { ...REQUEST, runId: "retry-run", turnId: "retry-turn" };
+    accept(instance, { identity: identityFor(retryRequest), request: retryRequest });
     const replay = createSink("replay");
     expect(accept(instance, { sink: replay.sink }).result.status).toBe("replayed");
     expect(terminalFrames(replay.frames)[0]?.payload.outcome).toEqual(ERROR);
@@ -223,7 +302,7 @@ describe("worker inference manager", () => {
     const sink = createSink();
     const instance = makeManager(async () => ERROR, store);
     accept(instance, { sink: sink.sink });
-    await vi.waitFor(() => expect(store.complete).toHaveBeenCalledOnce());
+    await waitForFast(() => expect(store.complete).toHaveBeenCalledOnce());
     expect(terminalFrames(sink.frames)).toEqual([]);
     await instance.stop();
   });
@@ -239,13 +318,13 @@ describe("worker inference manager", () => {
     const instance = makeManager(execute);
     const first = createSink("first");
     accept(instance, { sink: first.sink });
-    await vi.waitFor(() => expect(first.frames).toHaveLength(1));
+    await waitForFast(() => expect(first.frames).toHaveLength(1));
 
     const second = createSink("second");
     expect(accept(instance, { sink: second.sink }).result.status).toBe("accepted");
     release.resolve();
 
-    await vi.waitFor(() => expect(terminalFrames(second.frames)).toHaveLength(1));
+    await waitForFast(() => expect(terminalFrames(second.frames)).toHaveLength(1));
     expect(execute).toHaveBeenCalledOnce();
     expect(terminalFrames(first.frames)).toEqual([]);
     expect(second.frames[0]).toMatchObject({
@@ -271,12 +350,12 @@ describe("worker inference manager", () => {
       false,
     );
     accepted.launch();
-    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    await waitForFast(() => expect(execute).toHaveBeenCalledOnce());
 
     current = false;
     pending.resolve(DONE);
 
-    await vi.waitFor(() => expect(terminalFrames(sink.frames)).toHaveLength(1));
+    await waitForFast(() => expect(terminalFrames(sink.frames)).toHaveLength(1));
     expect(terminalFrames(sink.frames)[0]?.payload.outcome).toMatchObject({
       reason: "epoch-mismatch",
     });
@@ -312,7 +391,7 @@ describe("worker inference manager", () => {
         throw new Error("revalidation failed");
       },
     });
-    await vi.waitFor(() => expect(terminalFrames(sink.frames)).toHaveLength(1));
+    await waitForFast(() => expect(terminalFrames(sink.frames)).toHaveLength(1));
     expect(terminalFrames(sink.frames)[0]?.payload.outcome).toMatchObject({
       reason: "provider-error",
     });

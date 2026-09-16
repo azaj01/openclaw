@@ -1,4 +1,5 @@
 /** Versioned metadata-only durable audit contract. */
+import type { ExecutionIdentityAdmissionToken } from "./execution-identity-admission.js";
 
 export const AUDIT_EVENT_SCHEMA_VERSION = 1 as const;
 
@@ -26,6 +27,7 @@ export const AUDIT_INBOUND_MESSAGE_COMPLETED_REASONS = [
   "before_dispatch_handled",
   "acp_dispatch_completed",
   "acp_dispatch_empty",
+  "active_run_injected",
 ] as const;
 
 export type AuditInboundMessageCompletedReasonCode =
@@ -81,7 +83,7 @@ type AgentRunAuditLifecycle =
   | { action: "agent.run.started"; status: "started"; errorCode?: never }
   | ({ action: "agent.run.finished" } & AgentRunFinishedAuditTerminal);
 
-export type AgentRunAuditEventInput = AuditEventInputBase &
+type AgentRunAuditEventInput = AuditEventInputBase &
   AgentAuditAttribution &
   AgentRunAuditLifecycle & { kind: "agent_run" };
 
@@ -153,8 +155,27 @@ export type InboundMessageAuditTerminal =
       reasonCode?: AuditInboundMessageFailureReasonCode;
     };
 
-export type OutboundMessageAuditTerminal =
+type OutboundMessageAuditLifecycle =
   | {
+      action: "message.outbound.queued";
+      status: "started";
+      outcome: "queued";
+      errorCode?: never;
+      reasonCode?: never;
+      failureStage?: never;
+      deliveryKind?: never;
+    }
+  | {
+      action: "message.outbound.platform-started";
+      status: "started";
+      outcome: "platform_started";
+      errorCode?: never;
+      reasonCode?: never;
+      failureStage?: never;
+      deliveryKind?: never;
+    }
+  | {
+      action: "message.outbound.finished";
       status: "succeeded";
       outcome: "sent";
       errorCode?: never;
@@ -163,6 +184,7 @@ export type OutboundMessageAuditTerminal =
       deliveryKind?: AuditMessageDeliveryKind;
     }
   | {
+      action: "message.outbound.finished";
       status: "blocked";
       outcome: "suppressed";
       reasonCode: AuditOutboundMessageSuppressedReasonCode;
@@ -171,6 +193,7 @@ export type OutboundMessageAuditTerminal =
       deliveryKind?: never;
     }
   | {
+      action: "message.outbound.finished";
       status: "failed";
       outcome: "failed";
       errorCode: "message_delivery_failed" | "message_delivery_partial_failure";
@@ -179,6 +202,7 @@ export type OutboundMessageAuditTerminal =
       deliveryKind?: AuditMessageDeliveryKind;
     }
   | {
+      action: "message.outbound.finished";
       status: "unknown";
       outcome: "unknown";
       failureStage: AuditMessageFailureStage;
@@ -187,8 +211,18 @@ export type OutboundMessageAuditTerminal =
       deliveryKind?: never;
     };
 
+export type OutboundMessageProgressInput = MessageAuditEventInputBase &
+  OutboundMessageAuditAttribution &
+  Extract<
+    OutboundMessageAuditLifecycle,
+    { action: "message.outbound.queued" | "message.outbound.platform-started" }
+  > & {
+    direction: "outbound";
+    executionIdentityToken?: ExecutionIdentityAdmissionToken;
+  };
+
 /** Raw identifiers exist only on the trusted producer-to-writer boundary. */
-export type InboundMessageAuditEventInput = MessageAuditEventInputBase &
+type InboundMessageAuditEventInput = MessageAuditEventInputBase &
   InboundMessageAuditAttribution &
   InboundMessageAuditTerminal & {
     action: "message.inbound.processed";
@@ -198,11 +232,11 @@ export type InboundMessageAuditEventInput = MessageAuditEventInputBase &
   };
 
 /** Raw identifiers exist only on the trusted producer-to-writer boundary. */
-export type OutboundMessageAuditEventInput = MessageAuditEventInputBase &
+type OutboundMessageAuditEventInput = MessageAuditEventInputBase &
   OutboundMessageAuditAttribution &
-  OutboundMessageAuditTerminal & {
-    action: "message.outbound.finished";
+  OutboundMessageAuditLifecycle & {
     direction: "outbound";
+    executionIdentityToken?: ExecutionIdentityAdmissionToken;
   };
 
 export type MessageAuditEventInput = InboundMessageAuditEventInput | OutboundMessageAuditEventInput;
@@ -212,6 +246,17 @@ export type AuditEventInput =
   | AgentRunAuditEventInput
   | ToolActionAuditEventInput
   | MessageAuditEventInput;
+
+export function isOutboundMessageProgressInput(
+  input: AuditEventInput,
+): input is OutboundMessageProgressInput {
+  return (
+    input.kind === "message" &&
+    input.direction === "outbound" &&
+    (input.action === "message.outbound.queued" ||
+      input.action === "message.outbound.platform-started")
+  );
+}
 
 type AuditEventRecordBase = {
   schemaVersion: typeof AUDIT_EVENT_SCHEMA_VERSION;
@@ -282,8 +327,7 @@ export type InboundMessageAuditEventRecord = MessageAuditEventRecordBase &
 
 export type OutboundMessageAuditEventRecord = MessageAuditEventRecordBase &
   OutboundMessageAuditAttribution &
-  OutboundMessageAuditTerminal & {
-    action: "message.outbound.finished";
+  OutboundMessageAuditLifecycle & {
     direction: "outbound";
   };
 

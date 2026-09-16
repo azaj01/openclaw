@@ -14,7 +14,7 @@ type MockHttpHeaderMatcher =
 type MockHttpHeaders = Record<string, string | string[]>;
 type MockHttpBody = string | Buffer | Uint8Array | ArrayBuffer;
 
-export type MockHttpReply =
+type MockHttpReply =
   | {
       status?: number;
       body?: MockHttpBody;
@@ -28,16 +28,15 @@ export type MockHttpReply =
       headers?: MockHttpHeaders;
     };
 
-export type MockHttpInterceptor = {
+type MockHttpInterceptor = {
   url: string | URL;
   method?: string;
   requestBody?: MockHttpValueMatcher;
   requestHeaders?: MockHttpHeaderMatcher;
   reply: MockHttpReply | Error;
-  times?: number;
 };
 
-export type MockHttp = {
+type MockHttp = {
   setup: () => void;
   intercept: (params: MockHttpInterceptor) => void;
   requests: () => MockCallHistoryLog[];
@@ -93,16 +92,14 @@ export function createMockHttp(): MockHttp {
         ...(params.requestBody === undefined ? {} : { body: params.requestBody }),
         ...(params.requestHeaders === undefined ? {} : { headers: params.requestHeaders }),
       });
-      const scope =
-        params.reply instanceof Error
-          ? interceptor.replyWithError(params.reply)
-          : interceptor.reply(
-              params.reply.status ?? 200,
-              "json" in params.reply ? JSON.stringify(params.reply.json) : params.reply.body,
-              { headers: replyHeaders(params.reply) },
-            );
-      if (params.times !== undefined) {
-        scope.times(params.times);
+      if (params.reply instanceof Error) {
+        interceptor.replyWithError(params.reply);
+      } else {
+        interceptor.reply(
+          params.reply.status ?? 200,
+          "json" in params.reply ? JSON.stringify(params.reply.json) : params.reply.body,
+          { headers: replyHeaders(params.reply) },
+        );
       }
     },
     requests() {

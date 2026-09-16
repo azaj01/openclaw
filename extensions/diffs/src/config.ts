@@ -21,39 +21,7 @@ import {
 } from "./types.js";
 import { normalizeViewerBaseUrl } from "./url.js";
 
-type DiffsPluginConfig = {
-  viewerBaseUrl?: string;
-  defaults?: {
-    fontFamily?: string;
-    fontSize?: number;
-    lineSpacing?: number;
-    layout?: DiffLayout;
-    showLineNumbers?: boolean;
-    diffIndicators?: DiffIndicators;
-    wordWrap?: boolean;
-    background?: boolean;
-    theme?: DiffTheme;
-    fileFormat?: DiffOutputFormat;
-    fileQuality?: DiffImageQualityPreset;
-    fileScale?: number;
-    fileMaxWidth?: number;
-    /** @deprecated Use fileFormat. */
-    format?: DiffOutputFormat;
-    /** @deprecated Use fileFormat. */
-    imageFormat?: DiffOutputFormat;
-    /** @deprecated Use fileQuality. */
-    imageQuality?: DiffImageQualityPreset;
-    /** @deprecated Use fileScale. */
-    imageScale?: number;
-    /** @deprecated Use fileMaxWidth. */
-    imageMaxWidth?: number;
-    mode?: DiffMode;
-    ttlSeconds?: number;
-  };
-  security?: {
-    allowRemoteViewer?: boolean;
-  };
-};
+type DiffsPluginConfig = z.input<typeof DiffsPluginJsonSchemaSource>;
 
 const DEFAULT_IMAGE_QUALITY_PROFILES = {
   standard: {
@@ -76,7 +44,7 @@ const DEFAULT_IMAGE_QUALITY_PROFILES = {
   { scale: number; maxWidth: number; maxPixels: number }
 >;
 
-export const DEFAULT_DIFFS_TOOL_DEFAULTS: DiffToolDefaults = {
+const DEFAULT_DIFFS_TOOL_DEFAULTS: DiffToolDefaults = {
   fontFamily: "Fira Code",
   fontSize: 15,
   lineSpacing: 1.6,
@@ -98,7 +66,7 @@ type DiffsPluginSecurityConfig = {
   allowRemoteViewer: boolean;
 };
 
-export const DEFAULT_DIFFS_PLUGIN_SECURITY: DiffsPluginSecurityConfig = {
+const DEFAULT_DIFFS_PLUGIN_SECURITY: DiffsPluginSecurityConfig = {
   allowRemoteViewer: false,
 };
 
@@ -192,7 +160,7 @@ const diffsPluginConfigSchemaBase = buildPluginConfigSchema(DiffsPluginJsonSchem
     if (result.success) {
       return {
         success: true,
-        data: buildDiffsPluginConfigShape(result.data as DiffsPluginConfig),
+        data: buildDiffsPluginConfigShape(result.data),
       };
     }
     return {

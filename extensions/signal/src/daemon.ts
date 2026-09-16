@@ -4,6 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
+import {
+  ensurePortAvailable,
+  extractErrorCode,
+  formatErrorMessage,
+} from "openclaw/plugin-sdk/security-runtime";
+import { waitForTransportReady } from "openclaw/plugin-sdk/transport-ready-runtime";
+import { signalCheck } from "./client-adapter.js";
 
 type SignalDaemonOpts = {
   cliPath: string;
@@ -20,10 +27,12 @@ type SignalDaemonOpts = {
 
 export type SignalDaemonHandle = {
   pid?: number;
-  stop: () => void;
+  stop: () => Promise<void>;
   exited: Promise<SignalDaemonExitEvent>;
   isExited: () => boolean;
 };
+
+const SIGNAL_DAEMON_STOP_KILL_TIMEOUT_MS = 1_500;
 
 type SignalDaemonExitEvent = {
   source: "process" | "spawn-error";
@@ -33,6 +42,78 @@ type SignalDaemonExitEvent = {
 
 export function formatSignalDaemonExit(exit: SignalDaemonExitEvent): string {
   return `signal daemon exited (source=${exit.source} code=${exit.code ?? "null"} signal=${exit.signal ?? "null"})`;
+}
+
+function formatSignalDaemonEndpoint(httpHost: string, httpPort: number): string {
+  return `${httpHost.includes(":") ? `[${httpHost}]` : httpHost}:${httpPort}`;
+}
+
+export async function assertSignalDaemonEndpointAvailable(params: {
+  httpHost: string;
+  httpPort: number;
+  abortSignal?: AbortSignal;
+}): Promise<void> {
+  try {
+    await ensurePortAvailable(params.httpPort, params.httpHost, params.abortSignal);
+  } catch (error) {
+    if (params.abortSignal?.aborted) {
+      throw params.abortSignal.reason;
+    }
+    const isPortCollision =
+      extractErrorCode(error) === "EADDRINUSE" ||
+      (error instanceof Error && error.name === "PortInUseError");
+    if (!isPortCollision) {
+      // The operator-selected signal-cli may have stronger bind permissions than OpenClaw.
+      // Only a confirmed collision is authoritative from this parent-process probe.
+      return;
+    }
+    const endpoint = formatSignalDaemonEndpoint(params.httpHost, params.httpPort);
+    throw new Error(
+      `Signal managed native endpoint ${endpoint} is unavailable: ${formatErrorMessage(error)} Stop the conflicting service, configure this Signal account with a different transport.httpPort, or use external-native for an intentionally operator-managed daemon.`,
+      {
+        cause: error,
+      },
+    );
+  }
+}
+
+export async function waitForSignalDaemonReady(params: {
+  baseUrl: string;
+  abortSignal?: AbortSignal;
+  startupDeadlineMs: number;
+  logAfterMs: number;
+  logIntervalMs?: number;
+  runtime: RuntimeEnv;
+  waitForTransportReadyFn?: typeof waitForTransportReady;
+}): Promise<void> {
+  const waitForTransportReadyFn = params.waitForTransportReadyFn ?? waitForTransportReady;
+  const timeoutMs = Math.max(0, params.startupDeadlineMs - Date.now());
+  await waitForTransportReadyFn({
+    label: "signal daemon",
+    timeoutMs,
+    logAfterMs: params.logAfterMs,
+    logIntervalMs: params.logIntervalMs,
+    pollIntervalMs: 150,
+    abortSignal: params.abortSignal,
+    runtime: params.runtime,
+    check: async () => {
+      const remainingMs = params.startupDeadlineMs - Date.now();
+      if (remainingMs <= 0) {
+        return { ok: false, error: "startup deadline exceeded" };
+      }
+      const res = await signalCheck(params.baseUrl, Math.min(1_000, remainingMs));
+      if (Date.now() >= params.startupDeadlineMs) {
+        return { ok: false, error: "startup deadline exceeded" };
+      }
+      if (res.ok) {
+        return { ok: true };
+      }
+      return {
+        ok: false,
+        error: res.error ?? (res.status ? `HTTP ${res.status}` : "unreachable"),
+      };
+    },
+  });
 }
 
 function isRecoverableSignalCliReceiveException(line: string): boolean {
@@ -130,6 +211,7 @@ export function spawnSignalDaemon(opts: SignalDaemonOpts): SignalDaemonHandle {
   const error = opts.runtime?.error ?? (() => {});
   let exited = false;
   let settledExit = false;
+  let stopPromise: Promise<void> | undefined;
   let resolveExit!: (value: SignalDaemonExitEvent) => void;
   const exitedPromise = new Promise<SignalDaemonExitEvent>((resolve) => {
     resolveExit = resolve;
@@ -163,8 +245,14 @@ export function spawnSignalDaemon(opts: SignalDaemonOpts): SignalDaemonHandle {
     });
   });
   child.on("error", (err) => {
-    error(`signal-cli spawn error: ${String(err)}`);
-    settleExit({ source: "spawn-error", code: null, signal: null });
+    // ChildProcess also emits "error" when signaling an already-spawned process fails.
+    // Only a missing pid proves there was no daemon whose exit still needs to be observed.
+    if (child.pid === undefined) {
+      error(`signal-cli spawn error: ${String(err)}`);
+      settleExit({ source: "spawn-error", code: null, signal: null });
+    } else {
+      error(`signal-cli process error: ${String(err)}`);
+    }
   });
 
   return {
@@ -172,9 +260,38 @@ export function spawnSignalDaemon(opts: SignalDaemonOpts): SignalDaemonHandle {
     exited: exitedPromise,
     isExited: () => exited,
     stop: () => {
-      if (!child.killed && !exited) {
-        child.kill("SIGTERM");
+      if (exited) {
+        return Promise.resolve();
       }
+      if (stopPromise) {
+        return stopPromise;
+      }
+      if (!child.killed) {
+        try {
+          child.kill("SIGTERM");
+        } catch (err) {
+          error(`signal-cli stop error: ${String(err)}`);
+        }
+      }
+      stopPromise = new Promise<void>((resolve) => {
+        const timeout = setTimeout(() => {
+          if (!exited) {
+            try {
+              child.kill("SIGKILL");
+            } catch (err) {
+              error(`signal-cli force-stop error: ${String(err)}`);
+            }
+          }
+        }, SIGNAL_DAEMON_STOP_KILL_TIMEOUT_MS);
+        timeout.unref?.();
+        // Do not resolve merely because SIGKILL was sent: monitor lifetime prevents the gateway
+        // from starting a replacement before the old daemon releases its port and config lock.
+        void exitedPromise.then(() => {
+          clearTimeout(timeout);
+          resolve();
+        });
+      });
+      return stopPromise;
     },
   };
 }

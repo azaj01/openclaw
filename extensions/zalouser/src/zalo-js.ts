@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 // Zalouser plugin module implements zalo js behavior.
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { extensionForMime } from "openclaw/plugin-sdk/media-mime";
@@ -15,21 +14,25 @@ import {
   resolveTimerTimeoutMs,
 } from "openclaw/plugin-sdk/number-runtime";
 import { loadOutboundMediaFromUrl } from "openclaw/plugin-sdk/outbound-media";
-import {
-  privateFileStoreSync,
-  readRegularFileSync,
-  statRegularFileSync,
-  withTimeout,
-} from "openclaw/plugin-sdk/security-runtime";
-import { resolveStateDir as resolvePluginStateDir } from "openclaw/plugin-sdk/state-paths";
+import { withTimeout } from "openclaw/plugin-sdk/security-runtime";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
+  normalizeOptionalStringifiedId,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { sleep, truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { normalizeZaloReactionIcon } from "./reaction.js";
 import { createZalouserSendReceipt } from "./send-receipt.js";
+import {
+  clearStoredZaloCredentials,
+  loadStoredZaloCredentials,
+  loadStoredZaloCredentialsAsync,
+  normalizeZalouserCredentialProfile as normalizeProfile,
+  refreshStoredZaloCredentials,
+  saveStoredZaloCredentials,
+  type StoredZaloCredentials,
+} from "./session-state.js";
 import type {
   ZaloAuthStatus,
   ZaloEventMessage,
@@ -69,9 +72,11 @@ const MAX_SAFE_ZALO_TIMESTAMP_SECONDS = Number.MAX_SAFE_INTEGER / 1000;
 const apiByProfile = new Map<string, API>();
 const apiInitByProfile = new Map<string, Promise<API>>();
 const credentialSignaturesByProfile = new Map<string, string>();
+const credentialRefreshesByProfile = new Map<string, Promise<void>>();
 
 type CredentialPersistenceMode = "persist" | "read-only";
 type CredentialPersistenceOptions = { credentialPersistence?: CredentialPersistenceMode };
+type ZaloCredentialPayload = Omit<StoredZaloCredentials, "profile" | "createdAt" | "lastUsedAt">;
 
 type ActiveZaloQrLogin = {
   id: string;
@@ -97,78 +102,6 @@ const activeListeners = new Map<string, ActiveZaloListener>();
 const groupContextCache = new Map<string, { value: ZaloGroupContext; expiresAt: number }>();
 
 type AccountInfoResponse = Awaited<ReturnType<API["fetchAccountInfo"]>>;
-
-type ApiTypingCapability = {
-  sendTypingEvent: (
-    threadId: string,
-    type?: (typeof ThreadType)[keyof typeof ThreadType],
-  ) => Promise<unknown>;
-};
-
-type StoredZaloCredentials = {
-  imei: string;
-  cookie: Credentials["cookie"];
-  userAgent: string;
-  language?: string;
-  createdAt: string;
-  lastUsedAt?: string;
-};
-
-function resolveStateDir(env: NodeJS.ProcessEnv = process.env): string {
-  return resolvePluginStateDir(env, os.homedir);
-}
-
-function resolveCredentialsDir(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(resolveStateDir(env), "credentials", "zalouser");
-}
-
-function credentialsFilename(profile: string): string {
-  const trimmed = normalizeLowercaseStringOrEmpty(profile);
-  if (!trimmed || trimmed === "default") {
-    return "credentials.json";
-  }
-  return `credentials-${encodeURIComponent(trimmed)}.json`;
-}
-
-function resolveCredentialsPath(profile: string, env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(resolveCredentialsDir(env), credentialsFilename(profile));
-}
-
-function isNodeErrorCode(error: unknown, code: string): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === code
-  );
-}
-
-function isReadableCredentialFile(filePath: string): boolean {
-  try {
-    return !statRegularFileSync(filePath).missing;
-  } catch (error) {
-    if (isNodeErrorCode(error, "ENOENT")) {
-      return false;
-    }
-    throw error;
-  }
-}
-
-function writeCredentialFileAtomic(filePath: string, payload: string): void {
-  privateFileStoreSync(resolveCredentialsDir()).writeText(path.basename(filePath), payload);
-}
-
-function normalizeProfile(profile?: string | null): string {
-  const trimmed = profile?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : "default";
-}
-
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
-}
 
 function clampTextStyles(
   text: string,
@@ -217,13 +150,7 @@ function toNumberId(value: unknown): string {
 }
 
 function toStringValue(value: unknown): string {
-  if (typeof value === "string") {
-    return value.trim();
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return String(Math.trunc(value));
-  }
-  return "";
+  return normalizeOptionalStringifiedId(value) ?? "";
 }
 
 function normalizeAccountInfoUser(info: AccountInfoResponse): User | null {
@@ -565,30 +492,11 @@ function mapGroup(groupId: string, group: GroupInfo & Record<string, unknown>): 
 }
 
 function readCredentials(profile: string): StoredZaloCredentials | null {
-  const filePath = resolveCredentialsPath(profile);
   try {
-    if (!isReadableCredentialFile(filePath)) {
+    const credentials = loadStoredZaloCredentials(profile);
+    if (!credentials) {
       return null;
     }
-    const raw = readRegularFileSync({ filePath }).buffer.toString("utf-8");
-    const parsed = JSON.parse(raw) as Partial<StoredZaloCredentials>;
-    if (
-      typeof parsed.imei !== "string" ||
-      !parsed.imei ||
-      !parsed.cookie ||
-      typeof parsed.userAgent !== "string" ||
-      !parsed.userAgent
-    ) {
-      return null;
-    }
-    const credentials = {
-      imei: parsed.imei,
-      cookie: parsed.cookie as Credentials["cookie"],
-      userAgent: parsed.userAgent,
-      language: typeof parsed.language === "string" ? parsed.language : undefined,
-      createdAt: typeof parsed.createdAt === "string" ? parsed.createdAt : new Date().toISOString(),
-      lastUsedAt: typeof parsed.lastUsedAt === "string" ? parsed.lastUsedAt : undefined,
-    };
     credentialSignaturesByProfile.set(profile, credentialSignature(credentials));
     return credentials;
   } catch {
@@ -596,9 +504,7 @@ function readCredentials(profile: string): StoredZaloCredentials | null {
   }
 }
 
-function credentialSignature(
-  credentials: Omit<StoredZaloCredentials, "createdAt" | "lastUsedAt">,
-): string {
+function credentialSignature(credentials: ZaloCredentialPayload): string {
   return JSON.stringify({
     imei: credentials.imei,
     cookie: canonicalCredentialCookie(credentials.cookie),
@@ -652,25 +558,24 @@ function canonicalCredentialCookie(cookie: Credentials["cookie"]): unknown {
   );
 }
 
-function writeCredentials(
-  profile: string,
-  credentials: Omit<StoredZaloCredentials, "createdAt" | "lastUsedAt">,
-): void {
+function writeCredentials(profile: string, credentials: ZaloCredentialPayload): void {
   const existing = readCredentials(profile);
   const now = new Date().toISOString();
   const next: StoredZaloCredentials = {
+    profile,
     ...credentials,
     createdAt: existing?.createdAt ?? now,
     lastUsedAt: now,
   };
-  writeCredentialFileAtomic(resolveCredentialsPath(profile), JSON.stringify(next, null, 2));
+  const { profile: _profile, ...stored } = next;
+  saveStoredZaloCredentials(profile, stored);
   credentialSignaturesByProfile.set(profile, credentialSignature(next));
 }
 
 function snapshotApiCredentials(
   api: API,
-  fallback?: Partial<Omit<StoredZaloCredentials, "createdAt" | "lastUsedAt">>,
-): Omit<StoredZaloCredentials, "createdAt" | "lastUsedAt"> {
+  fallback?: Partial<ZaloCredentialPayload>,
+): ZaloCredentialPayload {
   const ctx = api.getContext();
   const cookieJson = api.getCookie().toJSON();
   const refreshedCookies =
@@ -683,46 +588,58 @@ function snapshotApiCredentials(
   if (!imei || !refreshedCookies || !userAgent) {
     throw new Error("Zalo API session did not expose refreshed credentials");
   }
+  const language =
+    normalizeOptionalString(ctx.language) ?? normalizeOptionalString(fallback?.language);
   return {
     imei,
     cookie: refreshedCookies as Credentials["cookie"],
     userAgent,
-    language: normalizeOptionalString(ctx.language) ?? normalizeOptionalString(fallback?.language),
+    ...(language ? { language } : {}),
   };
 }
 
 function writeApiCredentials(
   profile: string,
   api: API,
-  fallback?: Partial<Omit<StoredZaloCredentials, "createdAt" | "lastUsedAt">>,
+  fallback?: Partial<ZaloCredentialPayload>,
 ): void {
   writeCredentials(profile, snapshotApiCredentials(api, fallback));
 }
 
-function writeApiCredentialsIfChanged(profile: string, api: API): boolean {
-  const credentials = snapshotApiCredentials(api);
-  const signature = credentialSignature(credentials);
-  if (credentialSignaturesByProfile.get(profile) === signature) {
-    return false;
-  }
-  writeCredentials(profile, credentials);
-  return true;
-}
-
-function persistApiCredentialsIfChanged(profile: string, api: API): void {
+async function persistApiCredentialsIfChanged(profile: string, api: API): Promise<void> {
+  const previous = credentialRefreshesByProfile.get(profile) ?? Promise.resolve();
+  const refresh = previous.then(async () => {
+    try {
+      const isCurrent = () => apiByProfile.get(profile) === api;
+      if (!isCurrent()) {
+        return;
+      }
+      const credentials = snapshotApiCredentials(api);
+      const signature = credentialSignature(credentials);
+      if (credentialSignaturesByProfile.get(profile) === signature) {
+        return;
+      }
+      if ((await refreshStoredZaloCredentials(profile, credentials, isCurrent)) && isCurrent()) {
+        credentialSignaturesByProfile.set(profile, signature);
+      }
+    } catch {
+      // Do not fail an already-successful Zalo operation only because the
+      // best-effort session refresh could not be persisted.
+    }
+  });
+  credentialRefreshesByProfile.set(profile, refresh);
   try {
-    writeApiCredentialsIfChanged(profile, api);
-  } catch {
-    // Do not fail an already-successful Zalo operation only because the
-    // best-effort session refresh could not be persisted.
+    await refresh;
+  } finally {
+    if (credentialRefreshesByProfile.get(profile) === refresh) {
+      credentialRefreshesByProfile.delete(profile);
+    }
   }
 }
 
 function clearCredentials(profile: string): boolean {
-  const filePath = resolveCredentialsPath(profile);
   try {
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+    if (clearStoredZaloCredentials(profile)) {
       credentialSignaturesByProfile.delete(profile);
       return true;
     }
@@ -748,9 +665,10 @@ async function ensureApi(
     return await pending;
   }
 
-  const initPromise = (async () => {
-    const stored = readCredentials(profile);
-    if (!stored) {
+  const initPromise: Promise<API> = (async () => {
+    const isCurrent = () => apiInitByProfile.get(profile) === initPromise;
+    const stored = await loadStoredZaloCredentialsAsync(profile).catch(() => null);
+    if (!stored || !isCurrent()) {
       throw new Error(`No saved Zalo session for profile "${profile}"`);
     }
     const zalo = await createZalo({
@@ -767,10 +685,19 @@ async function ensureApi(
       timeoutMs,
       { message: `Timed out restoring Zalo session for profile "${profile}"` },
     );
-    apiByProfile.set(profile, api);
-    if (credentialPersistence === "persist") {
-      writeApiCredentials(profile, api, stored);
+    const persisted =
+      credentialPersistence === "persist"
+        ? await refreshStoredZaloCredentials(
+            profile,
+            snapshotApiCredentials(api, stored),
+            isCurrent,
+          )
+        : stored;
+    if (!isCurrent() || !persisted) {
+      throw new Error(`Zalo session restore was superseded for profile "${profile}"`);
     }
+    credentialSignaturesByProfile.set(profile, credentialSignature(persisted));
+    apiByProfile.set(profile, api);
     return api;
   })();
 
@@ -778,10 +705,14 @@ async function ensureApi(
   try {
     return await initPromise;
   } catch (error) {
-    apiByProfile.delete(profile);
+    if (apiInitByProfile.get(profile) === initPromise) {
+      apiByProfile.delete(profile);
+    }
     throw error;
   } finally {
-    apiInitByProfile.delete(profile);
+    if (apiInitByProfile.get(profile) === initPromise) {
+      apiInitByProfile.delete(profile);
+    }
   }
 }
 
@@ -799,7 +730,7 @@ async function withZaloApi<T>(
   const api = await ensureApi(profile, options.timeoutMs, credentialPersistence);
   const result = await operation(api);
   if (credentialPersistence === "persist" && (options.shouldPersist?.(result) ?? true)) {
-    persistApiCredentialsIfChanged(profile, api);
+    await persistApiCredentialsIfChanged(profile, api);
   }
   return result;
 }
@@ -934,7 +865,10 @@ function extractGroupMembersFromInfo(
   return members;
 }
 
-function toInboundMessage(message: Message, ownUserId?: string): ZaloInboundMessage | null {
+export function normalizeZaloInboundMessage(
+  message: Message,
+  ownUserId?: string,
+): ZaloInboundMessage | null {
   const data = message.data;
   const isGroup = message.type === ThreadType.Group;
   const senderId = toNumberId(data.uidFrom);
@@ -1000,35 +934,29 @@ function truncatePayloadText(text: string): string {
   return truncateUtf16Safe(text, 2000);
 }
 
-const testing = {
-  truncatePayloadText,
-  toInboundMessage,
-  readCachedGroupContext,
-  writeCachedGroupContext,
-  clearCachedGroupContext,
-};
-export { testing as __testing };
-
-function zalouserSessionExists(profileInput?: string | null): boolean {
-  const profile = normalizeProfile(profileInput);
-  return readCredentials(profile) !== null;
-}
-
 export async function checkZaloAuthenticated(
   profileInput?: string | null,
   options?: CredentialPersistenceOptions,
 ): Promise<boolean> {
   const profile = normalizeProfile(profileInput);
-  if (!zalouserSessionExists(profile)) {
+  if (!(await loadStoredZaloCredentialsAsync(profile).catch(() => null))) {
     return false;
   }
   try {
     await withZaloApi(
       profile,
-      async (api) =>
-        await withTimeout(api.fetchAccountInfo(), 12_000, {
-          message: "Timed out checking Zalo session",
-        }),
+      async (api) => {
+        try {
+          return await withTimeout(api.fetchAccountInfo(), 12_000, {
+            message: "Timed out checking Zalo session",
+          });
+        } catch (error) {
+          if (apiByProfile.get(profile) === api) {
+            invalidateApi(profile);
+          }
+          throw error;
+        }
+      },
       {
         timeoutMs: 12_000,
         credentialPersistence: options?.credentialPersistence ?? "persist",
@@ -1036,7 +964,6 @@ export async function checkZaloAuthenticated(
     );
     return true;
   } catch {
-    invalidateApi(profile);
     return false;
   }
 }
@@ -1264,6 +1191,7 @@ export async function sendZaloTextMessage(
       try {
         if (options.mediaUrl?.trim()) {
           const media = await loadOutboundMediaFromUrl(options.mediaUrl.trim(), {
+            maxBytes: options.mediaMaxBytes,
             mediaLocalRoots: options.mediaLocalRoots,
             mediaReadFile: options.mediaReadFile,
           });
@@ -1368,7 +1296,7 @@ export async function sendZaloTextMessage(
       } catch (error) {
         return {
           ok: false,
-          error: toErrorMessage(error),
+          error: formatErrorMessage(error),
           receipt: createZalouserSendReceipt({ threadId: trimmedThreadId, kind: "unknown" }),
         };
       }
@@ -1388,11 +1316,7 @@ export async function sendZaloTypingEvent(
   }
   await withZaloApi(profile, async (api) => {
     const type = options.isGroup ? ThreadType.Group : ThreadType.User;
-    if ("sendTypingEvent" in api && typeof api.sendTypingEvent === "function") {
-      await (api as API & ApiTypingCapability).sendTypingEvent(trimmedThreadId, type);
-      return;
-    }
-    throw new Error("Zalo typing indicator is not supported by current API session");
+    await api.sendTypingEvent(trimmedThreadId, type);
   });
 }
 
@@ -1417,6 +1341,10 @@ async function resolveOwnUserId(api: API): Promise<string> {
   }
 
   return "";
+}
+
+export async function resolveZaloOwnUserId(profileInput?: string | null): Promise<string> {
+  return await withZaloApi(profileInput, resolveOwnUserId);
 }
 
 export async function sendZaloReaction(params: {
@@ -1453,7 +1381,7 @@ export async function sendZaloReaction(params: {
       { shouldPersist: (result) => result.ok },
     );
   } catch (error) {
-    return { ok: false, error: toErrorMessage(error) };
+    return { ok: false, error: formatErrorMessage(error) };
   }
 }
 
@@ -1531,7 +1459,7 @@ export async function sendZaloLink(
   } catch (error) {
     return {
       ok: false,
-      error: toErrorMessage(error),
+      error: formatErrorMessage(error),
       receipt: createZalouserSendReceipt({ threadId: trimmedThreadId, kind: "card" }),
     };
   }
@@ -1592,8 +1520,7 @@ export async function startZaloQrLogin(params: {
     };
 
     login.waitPromise = (async () => {
-      let capturedCredentials: Omit<StoredZaloCredentials, "createdAt" | "lastUsedAt"> | null =
-        null;
+      let capturedCredentials: ZaloCredentialPayload | null = null;
       try {
         const zalo = await createZalo({ logging: false, selfListen: false });
         const api = await zalo.loginQR(undefined, (event: LoginQRCallbackEvent) => {
@@ -1674,7 +1601,7 @@ export async function startZaloQrLogin(params: {
       } catch (error) {
         const current = activeQrLogins.get(profile);
         if (current && current.id === login.id) {
-          current.error = toErrorMessage(error);
+          current.error = formatErrorMessage(error);
         }
       }
     })();
@@ -1801,7 +1728,7 @@ export async function startZaloListener(params: {
   accountId: string;
   profile?: string | null;
   abortSignal: AbortSignal;
-  onMessage: (message: ZaloInboundMessage) => void;
+  onMessage: (message: Message) => void | Promise<void>;
   onError: (error: Error) => void;
 }): Promise<{ stop: () => void }> {
   const profile = normalizeProfile(params.profile);
@@ -1813,10 +1740,7 @@ export async function startZaloListener(params: {
     );
   }
 
-  const { api, ownUserId } = await withZaloApi(profile, async (apiLocal) => ({
-    api: apiLocal,
-    ownUserId: await resolveOwnUserId(apiLocal),
-  }));
+  const api = await withZaloApi(profile, async (apiLocal) => apiLocal);
   let stopped = false;
   let watchdogTimer: ReturnType<typeof setInterval> | null = null;
   let lastWatchdogTickAt = Date.now();
@@ -1849,11 +1773,9 @@ export async function startZaloListener(params: {
     if (incoming.isSelf) {
       return;
     }
-    const normalized = toInboundMessage(incoming, ownUserId);
-    if (!normalized) {
-      return;
-    }
-    params.onMessage(normalized);
+    void Promise.resolve(params.onMessage(incoming)).catch((error: unknown) => {
+      failListener(error instanceof Error ? error : new Error(String(error)));
+    });
   };
 
   const failListener = (error: Error) => {
@@ -1993,3 +1915,4 @@ export async function resolveZaloAllowFromEntries(params: {
     };
   });
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
