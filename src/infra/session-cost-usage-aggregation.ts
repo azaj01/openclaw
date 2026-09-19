@@ -53,7 +53,7 @@ import { withSqliteWorkerCleanupFailure } from "./sqlite-worker-broker-reply.js"
 
 // Cache data is rebuildable. Semantic changes get a new version; old rows are
 // ignored and rebuilt instead of normalized through a runtime compatibility path.
-const USAGE_COST_ROLLUP_VERSION = 4;
+const USAGE_COST_ROLLUP_VERSION = 5;
 const USAGE_COST_FILE_ANCHOR_BYTES = 4096;
 
 type UsageCostJsonlCheckpoint = {
@@ -607,9 +607,6 @@ export async function refreshCostUsageCacheForAgent(params: {
     const pricingFingerprint = await resolveUsageCostPricingFingerprint(params.config, agentDir);
     const rows = readSessionCostUsageRollupRows(params.agentId, databasePath);
     const rawValues = new Map(rows.map((row) => [row.key, row.valueJson]));
-    const rollups = readUsageCostRollups(params.agentId, pricingFingerprint, databasePath, {
-      rows,
-    });
     const discoveredFiles = await listUsageCountedTranscriptStats(params.agentId, {
       sessionsDir: params.sessionsDir,
       storePath,
@@ -636,6 +633,10 @@ export async function refreshCostUsageCacheForAgent(params: {
         : params.startMs === undefined
           ? files
           : files.filter((file) => file.mtimeMs >= params.startMs!);
+    const refreshPaths = new Set(refreshFiles.map((file) => file.filePath));
+    const rollups = readUsageCostRollups(params.agentId, pricingFingerprint, databasePath, {
+      rows: rows.filter((row) => refreshPaths.has(row.key)),
+    });
     const maxFiles =
       params.maxFiles !== undefined && Number.isFinite(params.maxFiles) && params.maxFiles > 0
         ? Math.floor(params.maxFiles)
