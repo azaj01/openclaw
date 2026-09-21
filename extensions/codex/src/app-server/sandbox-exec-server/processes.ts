@@ -4,12 +4,17 @@
  */
 import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { coerceErrorMessage } from "openclaw/plugin-sdk/error-runtime";
-import { buildRemoteCommand, sanitizeEnvVars } from "openclaw/plugin-sdk/sandbox";
+import {
+  buildRemoteCommand,
+  prepareSandboxProcessCleanup,
+  sanitizeEnvVars,
+} from "openclaw/plugin-sdk/sandbox";
+import type { CodexNativeProcessClient } from "../native-process-authority.js";
 import type { JsonObject, JsonValue } from "../protocol.js";
 import { resolveFsSandboxPolicy } from "./fs-policy.js";
 import { requireObject, requireString, requireStringArray } from "./json-rpc.js";
 import { resolveExecServerPath } from "./path-uri.js";
-import { prepareSandboxChildExec, spawnSandboxChild } from "./sandbox-child.js";
+import { spawnSandboxChild } from "./sandbox-child.js";
 import type { ManagedProcess, OpenClawExecServer, ProcessChunk } from "./types.js";
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -22,6 +27,7 @@ export async function startProcess(
   processes: Map<string, ManagedProcess>,
   notify: ManagedProcess["emitNotification"],
   params: JsonValue | undefined,
+  processAuthority?: CodexNativeProcessClient,
 ): Promise<JsonObject> {
   const record = requireObject(params, "process/start params");
   const processId = requireString(record.processId, "processId");
@@ -62,14 +68,43 @@ export async function startProcess(
       managed.evictionTimer.unref?.();
     },
   };
+  const source = processAuthority?.claim(record.metadata, async () => {
+    await terminateManagedProcess(managed);
+  });
   processes.set(processId, managed);
-  const startPromise = runProcess(execServer, managed, { argv, cwd, env });
+  const startPromise = runProcess(execServer, managed, { argv, cwd, env, source });
   managed.startPromise = startPromise;
+  // Keep original-source custody through backend settlement, independently of
+  // native item receipts or reuse of the transport's string process handle.
+  void startPromise
+    .catch(() => undefined)
+    .then(async () => {
+      await managed.child?.settled;
+      if (managed.terminationRequested) {
+        // Transport close can precede a failed remote termination receipt.
+        // Join the exact cleanup operation before releasing its custody.
+        await managed.child?.terminate();
+      }
+      source?.settle();
+    })
+    .catch((error: unknown) => {
+      source?.fail(error);
+      embeddedAgentLog.warn("codex sandbox process settlement failed", {
+        processId,
+        error: coerceErrorMessage(error),
+      });
+    });
   try {
     await startPromise;
   } catch (error) {
-    processes.delete(processId);
     managed.failure = coerceErrorMessage(error);
+    await managed.child?.terminate().catch((cleanupError: unknown) => {
+      embeddedAgentLog.warn("codex sandbox failed-start cleanup failed", {
+        processId,
+        error: coerceErrorMessage(cleanupError),
+      });
+    });
+    processes.delete(processId);
     managed.exitCode = null;
     managed.exited = true;
     managed.closed = true;
@@ -117,11 +152,17 @@ function assertSupportedProcessSandbox(execServer: OpenClawExecServer, record: J
 async function runProcess(
   execServer: OpenClawExecServer,
   managed: ManagedProcess,
-  params: { argv: string[]; cwd: string; env: Record<string, string> },
+  params: {
+    argv: string[];
+    cwd: string;
+    env: Record<string, string>;
+    source?: ReturnType<CodexNativeProcessClient["claim"]>;
+  },
 ): Promise<void> {
   const backend = execServer.backend;
+  params.source?.assertAdmission();
   throwIfProcessStartCancelled(managed);
-  const remoteExec = prepareSandboxChildExec(backend, params.env);
+  const remoteExec = prepareSandboxProcessCleanup(backend, params.env);
   const execSpec = await backend.buildExecSpec({
     // Preserve the process identity and signal status of the requested argv.
     command: `exec ${buildRemoteCommand(params.argv)}`,
@@ -138,12 +179,18 @@ async function runProcess(
     });
     throw new Error("process start cancelled");
   }
+  let spawned = false;
   const owner = await spawnSandboxChild({
     argv: execSpec.argv,
     env: execSpec.env,
     cwd: execSpec.cwd,
     usePty: managed.tty,
     assertCurrent: () => {
+      if (spawned) {
+        params.source?.assertCurrent();
+      } else {
+        params.source?.assertAdmission();
+      }
       execSpec.assertCurrent?.();
       throwIfProcessStartCancelled(managed);
     },
@@ -162,6 +209,7 @@ async function runProcess(
     terminateRemote: remoteExec.terminate,
     interruptRemote: remoteExec.interrupt,
   });
+  spawned = true;
   managed.child = owner;
   void owner.exited.then(({ exitCode }) => emitProcessExited(managed, exitCode));
   void owner.closed.then(({ exitCode }) => emitProcessClosed(managed, exitCode));
@@ -182,6 +230,7 @@ async function runProcess(
     managed.failure ??= error.message;
     notifyProcessWaiters(managed);
   });
+  owner.assertCurrent();
   if (!managed.tty && !managed.pipeStdin) {
     child.stdin.end();
   }
@@ -326,11 +375,13 @@ export function writeProcess(
     return { status: "stdinClosed" };
   }
   if ("pty" in managed.child) {
+    managed.child.assertCurrent();
     managed.child.pty.write(chunk);
   } else {
     if (!managed.child.process.stdin.writable) {
       return { status: "stdinClosed" };
     }
+    managed.child.assertCurrent();
     managed.child.process.stdin.write(chunk);
   }
   return { status: "accepted" };
@@ -348,6 +399,7 @@ export async function signalProcess(
   const managed = processes.get(processId);
   if (managed && !managed.exited) {
     await managed.startPromise;
+    managed.child?.assertCurrent();
     await managed.child?.interrupt();
   }
   return {};
@@ -364,6 +416,10 @@ export async function terminateProcess(
   if (!managed) {
     return { running: false };
   }
+  return await terminateManagedProcess(managed);
+}
+
+async function terminateManagedProcess(managed: ManagedProcess): Promise<JsonObject> {
   const running = !managed.exited;
   managed.terminationRequested = true;
   await managed.startPromise?.catch(() => undefined);

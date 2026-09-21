@@ -187,6 +187,7 @@ type ResolveApiKeyForProfileParams = {
   agentDir?: string;
   forceRefresh?: boolean;
   allowProfileFallback?: boolean;
+  signal?: AbortSignal;
   /** Reject an OAuth credential before the resolver persists, adopts, or returns it. */
   validateOAuthCredential?: (credential: OAuthCredential) => void;
 };
@@ -264,13 +265,6 @@ const oauthManager = createOAuthManager({
     }),
 });
 
-export async function waitForActiveOAuthRefreshes(
-  provider: string,
-  profileId?: string,
-): Promise<void> {
-  await oauthManager.waitForActiveOAuthRefreshes(provider, profileId);
-}
-
 /** Clear in-process OAuth refresh queues between isolated tests. */
 function resetOAuthRefreshQueuesForTest(): void {
   oauthManager.resetRefreshQueuesForTest();
@@ -317,7 +311,9 @@ async function tryResolveOAuthProfile(
     cfg,
     forceRefresh: params.forceRefresh,
     validateCredential: params.validateOAuthCredential,
+    signal: params.signal,
   });
+  params.signal?.throwIfAborted();
   if (!resolved) {
     return null;
   }
@@ -421,6 +417,7 @@ function throwUnmaterializedAuthProfileSecretRef(params: {
 export async function resolveApiKeyForProfile(
   params: ResolveApiKeyForProfileParams,
 ): Promise<ResolveApiKeyForProfileResult | null> {
+  params.signal?.throwIfAborted();
   const { cfg, store, profileId } = params;
   const storedProfile = isUserModelAuthProfileId(profileId)
     ? findPersistedAuthProfileCredential({ agentDir: params.agentDir, profileId })
@@ -541,7 +538,9 @@ export async function resolveApiKeyForProfile(
       cfg,
       forceRefresh: params.forceRefresh,
       validateCredential: params.validateOAuthCredential,
+      signal: params.signal,
     });
+    params.signal?.throwIfAborted();
     if (!resolved) {
       return null;
     }
@@ -554,6 +553,7 @@ export async function resolveApiKeyForProfile(
       credential: resolved.credential,
     });
   } catch (error) {
+    params.signal?.throwIfAborted();
     let refreshedStore =
       error instanceof OAuthManagerRefreshError
         ? error.getRefreshedStore()
@@ -615,11 +615,13 @@ export async function resolveApiKeyForProfile(
           agentDir: params.agentDir,
           forceRefresh: params.forceRefresh,
           validateOAuthCredential: params.validateOAuthCredential,
+          signal: params.signal,
         });
         if (fallbackResolved) {
           return fallbackResolved;
         }
       } catch {
+        params.signal?.throwIfAborted();
         // keep original error
       }
     }
