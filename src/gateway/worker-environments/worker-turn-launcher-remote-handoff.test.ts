@@ -21,10 +21,8 @@ import {
   completeWorkerLaunchDescriptor,
   type WorkerLaunchDescriptor,
 } from "../../worker/launch-descriptor.js";
-import {
-  createAgentRuntimeApprovalAuthorityValidator,
-  verifyAgentRuntimeIdentityToken,
-} from "../agent-runtime-identity-token.js";
+import { createAgentRuntimeApprovalAuthorityValidator } from "../agent-runtime-approval-authority.js";
+import { verifyAgentRuntimeIdentityToken } from "../agent-runtime-identity-token.js";
 import { createWorkerSessionPlacementGate } from "./placement-worker-gate.js";
 import type { WorkerTunnelHandle } from "./tunnel-contract.js";
 import {
@@ -99,7 +97,7 @@ describe("worker turn launcher remote handoff", () => {
     if (!bootstrapReceipt) {
       throw new Error("expected bootstrap receipt");
     }
-    const acknowledgeCredentialDelivery = vi.fn(() => true);
+    const acknowledgeCredentialDelivery = vi.fn(async () => true);
     const reconcileWorkspace = vi.fn(
       async (request: Parameters<WorkerTunnelHandle["reconcileWorkspace"]>[0]) => {
         if (request.source.kind !== "local") {
@@ -489,7 +487,7 @@ describe("worker turn launcher remote handoff", () => {
     const environments: WorkerTurnEnvironmentService = {
       get: vi.fn(() => browserEnvironment()),
       acquireTurnCredential: vi.fn(async () => credential()),
-      acknowledgeCredentialDelivery: vi.fn(() => true),
+      acknowledgeCredentialDelivery: vi.fn(async () => true),
       startTunnel: vi.fn(async () => tunnel),
       stopTunnel: vi.fn(async () => {}),
       destroy: vi.fn(async () => attachedEnvironment()),

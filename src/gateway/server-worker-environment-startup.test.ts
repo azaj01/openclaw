@@ -36,6 +36,8 @@ import {
   DEVICE_WORKER_PROVIDER_ID,
   reconcileDeviceWorker,
 } from "./worker-environments/device-provider.js";
+import { createWorkerInferenceStore } from "./worker-environments/inference-store.js";
+import * as workerServices from "./worker-environments/service.js";
 
 const DEVICE_ID = "revoked-device";
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
@@ -51,6 +53,73 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
 );
 
 describe("gateway worker environment startup", () => {
+  it.each([false, true])(
+    "retires failed startup subscriptions and transfer scratch (cleanup failure=%s)",
+    async (cleanupFails) => {
+      const stateDir = tempDirs.make("openclaw-worker-readiness-failure-");
+      const transferRoot = path.join(stateDir, "tmp", "node-workspace-transfer");
+      const readinessFailure = new Error("inference recovery failed");
+      const cleanupFailure = new Error("bootstrap artifact cleanup failed");
+      await withGatewayWorkerEnvironmentStartupState(stateDir, async () => {
+        const startup = await loadGatewayWorkerEnvironmentStartupState();
+        const activeSubscriptions = new Set<() => void>();
+        const register = startup.placementStore.registerTurnClaimClosedHandler.bind(
+          startup.placementStore,
+        );
+        const registerSpy = vi
+          .spyOn(startup.placementStore, "registerTurnClaimClosedHandler")
+          .mockImplementation((handler) => {
+            const unsubscribe = register(handler);
+            activeSubscriptions.add(unsubscribe);
+            return () => {
+              unsubscribe();
+              activeSubscriptions.delete(unsubscribe);
+            };
+          });
+        const createService = workerServices.createWorkerEnvironmentService;
+        let service: ReturnType<typeof createService> | undefined;
+        vi.spyOn(workerServices, "createWorkerEnvironmentService").mockImplementation((options) => {
+          const inferenceStore = createWorkerInferenceStore();
+          vi.spyOn(inferenceStore, "recoverPending").mockRejectedValue(readinessFailure);
+          service = createService({
+            ...options,
+            inferenceStore,
+            closeNodeBootstrapArtifacts: async () => {
+              await options.closeNodeBootstrapArtifacts?.();
+              if (cleanupFails) {
+                throw cleanupFailure;
+              }
+            },
+          });
+          return service;
+        });
+        const registry = createEmptyPluginRegistry();
+        const creating = createGatewayWorkerEnvironmentRuntime({
+          getPluginRegistry: () => registry,
+          getPortalRuntime: () => undefined,
+          resolveGatewayContext: () => undefined,
+          desktopSessionRegistry: createDesktopSessionRegistry({ lingerMs: 1 }),
+          startup,
+          log: { child: () => ({ warn: () => {} }) },
+        });
+        try {
+          if (cleanupFails) {
+            await expect(creating).rejects.toMatchObject({
+              errors: [readinessFailure, cleanupFailure],
+            });
+          } else {
+            await expect(creating).rejects.toBe(readinessFailure);
+          }
+          expect(registerSpy).toHaveBeenCalled();
+          expect(activeSubscriptions.size).toBe(0);
+          await expect(fs.stat(transferRoot)).rejects.toMatchObject({ code: "ENOENT" });
+        } finally {
+          await service?.stop().catch(() => undefined);
+        }
+      });
+    },
+  );
+
   it("cleans transfer scratch before serving and removes it on shutdown", async () => {
     const stateDir = tempDirs.make("openclaw-worker-transfer-startup-");
     const transferRoot = path.join(stateDir, "tmp", "node-workspace-transfer");
@@ -167,19 +236,19 @@ describe("gateway worker environment startup", () => {
     const stateDir = tempDirs.make("openclaw-worker-startup-");
     await withGatewayWorkerEnvironmentStartupState(stateDir, async () => {
       const startup = await loadGatewayWorkerEnvironmentStartupState();
-      startup.store.createIntent({
+      await startup.store.createIntent({
         environmentId: "device-environment",
         providerId: DEVICE_WORKER_PROVIDER_ID,
         profileId: `device:${DEVICE_ID}`,
         profileSnapshot: { install: "bundle", settings: { device: DEVICE_ID } },
         provisionOperationId: "provision:device-environment",
       });
-      startup.store.transition({
+      await startup.store.transition({
         environmentId: "device-environment",
         from: "requested",
         to: "provisioning",
       });
-      startup.store.transition({
+      await startup.store.transition({
         environmentId: "device-environment",
         from: "provisioning",
         to: "ready",
@@ -241,21 +310,21 @@ describe("gateway worker environment startup", () => {
     await withGatewayWorkerEnvironmentStartupState(stateDir, async () => {
       setRuntimeConfigSnapshot({ cloudWorkers: { desktop: true } });
       const startup = await loadGatewayWorkerEnvironmentStartupState();
-      const intent = startup.store.createIntent({
+      const intent = await startup.store.createIntent({
         environmentId: "node-desktop-environment",
         providerId: "fake-provider",
         profileId: "desktop-profile",
         profileSnapshot: { settings: { desktop: true } },
         provisionOperationId: "provision:node-desktop-environment",
       });
-      const provisioning = startup.store.transition({
+      const provisioning = await startup.store.transition({
         environmentId: intent.environmentId,
         from: intent.state,
         to: "provisioning",
       });
       const nodeId = "node-desktop-device";
       const app = { id: "terminal" as const, executablePath: "/usr/bin/true" };
-      const record = startup.store.transition({
+      const record = await startup.store.transition({
         environmentId: provisioning.environmentId,
         from: provisioning.state,
         to: "ready",
@@ -351,14 +420,14 @@ describe("prepared node workspace ownership over the Gateway transport", () => {
         if (changed) {
           await fs.writeFile(path.join(f.prepared.workspaceDir, "source.txt"), "changed source\n");
           await expect(f.register()).rejects.toThrow("source does not match its manifest");
-          expect(f.preparedStore.find(f.record.environmentId)).toBeUndefined();
+          expect(await f.preparedStore.find(f.record.environmentId)).toBeUndefined();
           return;
         }
         await f.register();
-        f.attach();
+        await f.attach();
         await f.bind();
         expect(f.received.map((response) => response.ok)).toEqual([true, true]);
-        const acquired = f.workspace.acquireManagedWorkspace({
+        const acquired = await f.workspace.acquireManagedWorkspaceAsync({
           ...f.binding,
           workspaceDir: f.prepared.workspaceDir,
         });
@@ -387,7 +456,7 @@ describe("prepared node workspace ownership over the Gateway transport", () => {
     await withPreparedNodeAcknowledgement(root, async (f) => {
       if (action === "bind") {
         await f.register();
-        f.attach();
+        await f.attach();
       }
       const entered = createDeferredCore();
       const release = createDeferredCore();
@@ -410,12 +479,12 @@ describe("prepared node workspace ownership over the Gateway transport", () => {
           f.setPreparedWorkspace(false);
         } else if (loss === "owner") {
           if (action === "register") {
-            f.startup.store.requestDestroy({
+            await f.startup.store.requestDestroy({
               environmentId: f.record.environmentId,
               state: "provisioning",
             });
           } else {
-            f.startup.store.revokeEnvironmentCredential(f.record.environmentId);
+            await f.startup.store.revokeEnvironmentCredential(f.record.environmentId);
           }
         } else if (loss === "placement") {
           const placement = f.startup.placementStore.get(f.binding.sessionId)!;
@@ -435,7 +504,7 @@ describe("prepared node workspace ownership over the Gateway transport", () => {
         release.resolve();
         expect(await operation).toBeInstanceOf(Error);
         expect(f.invoked).toHaveLength(invokedBefore);
-        const registration = f.preparedStore.find(f.record.environmentId);
+        const registration = await f.preparedStore.find(f.record.environmentId);
         if (action === "bind") {
           expect(registration).toMatchObject({ session_id: null, bound_at_ms: null });
         } else {
@@ -472,7 +541,7 @@ describe("prepared node workspace ownership over the Gateway transport", () => {
         await f.cancelled.promise;
         release.resolve();
         await f.settleInvokes();
-        expect(f.preparedStore.find(f.record.environmentId)).toBeUndefined();
+        expect(await f.preparedStore.find(f.record.environmentId)).toBeUndefined();
       } finally {
         caller.abort();
         release.resolve();

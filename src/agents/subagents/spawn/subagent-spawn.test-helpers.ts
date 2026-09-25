@@ -5,10 +5,8 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { expect, vi } from "vitest";
 import { resolveLeastPrivilegeOperatorScopesForMethod } from "../../../gateway/method-scopes.js";
 import type { SubagentLifecycleHookRunner } from "../../../plugins/hooks.js";
-import type {
-  RegisterSubagentRunOptions,
-  RegisterSubagentRunParams,
-} from "../registry/subagent-registry.types.js";
+import type { RegisterSubagentRunParams } from "../registry/subagent-registry-run-launch-record.js";
+import type { RegisterSubagentRunOptions } from "../registry/subagent-registry.types.js";
 
 type MockFn = (...args: unknown[]) => unknown;
 type MockImplementationTarget = {
@@ -26,6 +24,35 @@ type HookRunner = Pick<SubagentLifecycleHookRunner, "hasHooks"> &
 type SubagentSpawnModuleForTest = Awaited<typeof import("./subagent-spawn.js")> & {
   resetSubagentRegistryForTests: MockFn;
 };
+
+export function firstMockCall(mock: { mock: { calls: unknown[][] } }, label: string): unknown[] {
+  const call = mock.mock.calls[0];
+  if (!call) {
+    throw new Error(`Expected ${label} to be called`);
+  }
+  return call;
+}
+
+export function latestMockCall(mock: { mock: { calls: unknown[][] } }, label: string): unknown[] {
+  const call = mock.mock.calls[mock.mock.calls.length - 1];
+  if (!call) {
+    throw new Error(`Expected ${label} to be called`);
+  }
+  return call;
+}
+
+export function expectRegisteredSubagentRun(
+  mock: unknown,
+  expected: Partial<RegisterSubagentRunParams>,
+  options: Pick<RegisterSubagentRunOptions, "assertCurrent"> = {
+    assertCurrent: expect.any(Function),
+  },
+) {
+  expect(mock).toHaveBeenCalledWith(
+    expect.objectContaining(expected),
+    expect.objectContaining(options),
+  );
+}
 
 /** Orchestration fixtures assume a supported model; support policy has its own owner tests. */
 export async function supportedSpawnModelChoice(

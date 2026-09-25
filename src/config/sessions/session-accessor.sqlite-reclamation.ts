@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { normalizeAgentId } from "@openclaw/normalization-core/agent-id";
+import { isGatewayExternallySupervised } from "../../infra/gateway-supervision.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
@@ -19,6 +20,7 @@ import {
   resolveOpenClawStateDirForDatabasePath,
   resolveOpenClawStateSqlitePath,
 } from "../../state/openclaw-state-db.paths.js";
+import { reclaimSessionArchivePublicationInTransaction } from "./session-accessor.sqlite-archive-transaction.js";
 import type { MaterializedSessionStateDeletePlan } from "./session-accessor.sqlite-archive-types.js";
 import type {
   DeleteSessionEntryLifecycleParams,
@@ -99,7 +101,10 @@ export function resolveSessionReclamationDatabaseOptions(
   const sharedStatePath = options.database?.path ?? resolveOpenClawStateSqlitePath(sourceEnv);
   return {
     agentId: normalizeAgentId(options.agentId),
-    env: { OPENCLAW_STATE_DIR: resolveOpenClawStateDirForDatabasePath(sharedStatePath) },
+    env: {
+      OPENCLAW_STATE_DIR: resolveOpenClawStateDirForDatabasePath(sharedStatePath),
+      ...(isGatewayExternallySupervised(sourceEnv) ? { OPENCLAW_SUPERVISOR_MODE: "external" } : {}),
+    },
     path: resolveOpenClawAgentSqlitePath(options),
   };
 }
@@ -283,6 +288,9 @@ function reclaimSqliteRowsInTransaction(
   plan: Exclude<SqliteSessionReclamationPlan, { kind: "maintenance-pages" }>,
   callbacks: SqliteSessionReclamationCallbacks,
 ): SqliteSessionReclamationResult {
+  if (plan.kind === "archive-publish-prepare" || plan.kind === "archive-publish-record") {
+    return reclaimSessionArchivePublicationInTransaction(plan, callbacks);
+  }
   if (
     plan.kind === "maintenance-plan" ||
     plan.kind === "maintenance-finalize" ||
@@ -462,7 +470,7 @@ export async function runSqliteSessionReclamation(params: {
   }
   return await withSqliteMutationWorkerLifetime(
     params.plan.databaseOptions,
-    async ({ assertCurrent, commitGate }) => {
+    async ({ assertCurrent, commitGate, signal }) => {
       const assertRequestCurrent = () => {
         assertCurrent();
         params.assertCommitAllowed?.();
@@ -474,6 +482,9 @@ export async function runSqliteSessionReclamation(params: {
           return retainOpenClawAgentDatabaseReadOnly(params.plan.databaseOptions);
         },
         "session.reclamation.retain",
+        undefined,
+        "foreground",
+        signal,
       );
       if (!retained.found) {
         throw new Error("SQLite session reclamation lost its prepared database");
@@ -500,10 +511,12 @@ export async function runSqliteSessionReclamation(params: {
                 worker,
                 assertRequestCurrent,
                 commitGate,
+                signal,
               },
             );
           },
           assertRequestCurrent,
+          signal,
         );
       } finally {
         claim.release();
