@@ -1,3 +1,4 @@
+import { pruneMapToMaxSize } from "../../../../src/infra/map-size.ts";
 import { resolveScrollBehavior } from "../../lib/scroll-behavior.ts";
 import { areUiSessionKeysEquivalent } from "../../lib/sessions/session-key.ts";
 import type { RenderLifecycle } from "./render-lifecycle.ts";
@@ -26,13 +27,7 @@ function getPaneScrollTops(paneId: string): Map<string, ChatSessionScrollPositio
   }
   const created = new Map<string, ChatSessionScrollPosition>();
   transcriptScrollTopByPane.set(paneId, created);
-  while (transcriptScrollTopByPane.size > MAX_CACHED_TRANSCRIPT_SCROLL_PANES) {
-    const oldest = transcriptScrollTopByPane.keys().next().value;
-    if (typeof oldest !== "string") {
-      break;
-    }
-    transcriptScrollTopByPane.delete(oldest);
-  }
+  pruneMapToMaxSize(transcriptScrollTopByPane, MAX_CACHED_TRANSCRIPT_SCROLL_PANES);
   return created;
 }
 
@@ -115,6 +110,11 @@ type ChatScrollOptions = {
 
 type PendingChatScroll = { manual: boolean; cancel: () => void };
 const pendingChatScrolls = new WeakMap<ChatScrollHost, PendingChatScroll>();
+
+/** A queued reader command owns the next viewport movement, including geometric follow. */
+export function canAutoFollowChat(host: ChatScrollHost): boolean {
+  return !host.chatFollowLocked && !pendingChatScrolls.get(host)?.manual;
+}
 
 export function cancelChatScroll(host: ChatScrollHost): void {
   pendingChatScrolls.get(host)?.cancel();
@@ -217,13 +217,23 @@ function queueChatScroll(
   };
   pendingChatScrolls.set(host, request);
   const enqueue = (complete?: () => void) => {
-    frame = requestAnimationFrame(() => {
+    const apply = () => {
       if (pendingChatScrolls.get(host) !== request) {
         return;
       }
       pendingChatScrolls.delete(host);
       complete?.();
       applyChatScroll(host, force, smooth, options);
+    };
+    frame = requestAnimationFrame(() => {
+      // The composer viewport and appended rows commit their measured sizes in
+      // ResizeObserver after rAF. Starting a smooth send against their estimates
+      // makes the virtualizer snap to a revised target on its next frame.
+      if (request.manual && smooth && resolveScrollBehavior() === "smooth") {
+        frame = requestAnimationFrame(apply);
+      } else {
+        apply();
+      }
     });
     return request.cancel;
   };

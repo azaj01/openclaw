@@ -157,7 +157,9 @@ export function formatRawProviderLabel(provider: string): string {
 
 /** Brand display name for a (normalized, lowercase) provider id. */
 export function providerDisplayLabel(provider: string): string {
-  return PROVIDER_DISPLAY_LABELS[provider] ?? formatRawProviderLabel(provider);
+  return Object.hasOwn(PROVIDER_DISPLAY_LABELS, provider)
+    ? PROVIDER_DISPLAY_LABELS[provider]!
+    : formatRawProviderLabel(provider);
 }
 
 /** Provider id from a canonical `provider/model` reference, or null when absent. */
@@ -249,10 +251,6 @@ function renderBrandIcon(assetPath: string, icon: string, className = "") {
   ></span>`;
 }
 
-function providerIconAssetPath(icon: string): string {
-  return inferControlUiPublicAssetPath(`provider-icons/ProviderIcon-${icon}.svg`);
-}
-
 /** Lettered badge for surfaces that must not infer a provider identity. */
 export function renderProviderFallbackIcon(label: string, options?: { className?: string }) {
   const surfaceClass = options?.className ? ` ${options.className}` : "";
@@ -277,5 +275,9 @@ export function renderProviderBrandIcon(provider: string, options?: { className?
   if (!icon) {
     return renderProviderFallbackIcon(provider, options);
   }
-  return renderBrandIcon(providerIconAssetPath(icon), icon, surfaceClass.trim());
+  return renderBrandIcon(
+    inferControlUiPublicAssetPath(`provider-icons/ProviderIcon-${icon}.svg`),
+    icon,
+    surfaceClass.trim(),
+  );
 }

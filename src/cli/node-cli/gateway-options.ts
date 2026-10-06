@@ -16,15 +16,7 @@ type NodeGatewayOptions = {
   tlsFingerprint?: string;
 };
 
-type NodePairGatewayOptions = {
-  host: string;
-  port: number;
-  contextPath?: string;
-  tls: boolean;
-  tlsFingerprint?: string;
-  bootstrapToken: string;
-  candidates: NodeHostGatewayConfig[];
-};
+type NodePairGatewayOptions = ReturnType<typeof resolveNodePairGatewayPayload>;
 
 type PairingSetupPayload = ReturnType<typeof decodePairingSetupCode>;
 
@@ -40,14 +32,15 @@ function gatewayConfigFromUrl(url: string, tlsFingerprint?: string): NodeHostGat
   };
 }
 
-export function resolveNodePairGatewayOptions(input: string): NodePairGatewayOptions {
-  return resolveNodePairGatewayPayload(decodePairingSetupCode(input));
+export function resolveNodePairGatewayOptions(
+  input: string,
+  options: { allowExpired?: boolean } = {},
+): NodePairGatewayOptions {
+  return resolveNodePairGatewayPayload(decodePairingSetupCode(input, options));
 }
 
 /** Project a validated pairing payload into the canonical node-host candidate list. */
-export function resolveNodePairGatewayPayload(
-  payload: PairingSetupPayload,
-): NodePairGatewayOptions {
+export function resolveNodePairGatewayPayload(payload: PairingSetupPayload) {
   const candidates = (payload.urls ?? [payload.url]).map((url) =>
     gatewayConfigFromUrl(url, url === payload.url ? payload.tlsFingerprint : undefined),
   );
@@ -59,6 +52,7 @@ export function resolveNodePairGatewayPayload(
     tls: primary.tls ?? false,
     ...(primary.tlsFingerprint ? { tlsFingerprint: primary.tlsFingerprint } : {}),
     bootstrapToken: payload.bootstrapToken,
+    ...(payload.expiresAtMs !== undefined ? { expiresAtMs: payload.expiresAtMs } : {}),
     candidates,
   };
 }
